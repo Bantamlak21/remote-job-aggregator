@@ -119,5 +119,8 @@ notifications.local/
 # Generated files
 generated/
 
+# Agent
+.claude/
+
 # Rule
 CLAUDE.md
