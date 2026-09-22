@@ -17,8 +17,10 @@ Full requirements live in the repo's (gitignored, not committed) `CLAUDE.md`.
 
 **Phase 1 and Phase 2 are merged to `main`.** A search-based discovery mechanism (an
 extension of Phase 2's discovery, addressing the explicit requirement to find companies via
-a real web search instead of a hand-curated seed file) is implemented, reviewed, and — as of
-this document — being committed/pushed with a PR opening; see Section 2's "Search-based
+a real web search instead of a hand-curated seed file) is implemented and merged (PR #4,
+built against the Google Custom Search API). A same-session follow-up swapping the search
+provider to Serper, because Google's API became unviable and Brave's free tier requires a
+credit card, is reviewed and open as PR #5, not yet merged; see Section 2's "Search-based
 discovery" subsection. There is still no ATS integration, ingestion, filtering, ranking,
 scheduling, or notification code: nothing in the system yet reads or stores an actual job
 posting.
@@ -250,11 +252,13 @@ addressed (a test name that only checked a lower bound, a missing explicit
 
 ### Search-based discovery (extends Phase 2, this session)
 
-**Status: complete, reviewed (two rounds of independent adversarial critic review against
-the original Google Custom Search implementation, round 2 ACCEPT; the search *provider* was
-then swapped to Serper — see below — with its own fresh review pass), being
-committed/pushed with a PR opening as of this document.** No schema migration; one
-query-level behavior change to an existing table (see below).
+**Status: complete, reviewed, split across two PRs.** The original discovery mechanism —
+Google Custom Search, two rounds of independent adversarial critic review, round 2 ACCEPT —
+is **merged to `main` as PR #4** (commit `86e4506`). A same-session follow-up swapping the
+search provider to Serper — its own independent cold critic pass, ACCEPT, no blockers — is
+**open, not yet merged, as PR #5** (commit `d6f1512`,
+https://github.com/Bantamlak12/remote-job-aggregator/pull/5). No schema migration; one
+query-level behavior change to an existing table, shipped in PR #4 (see below).
 
 **Why this exists:** the user explicitly redirected discovery away from hand-curated seed
 data — "Instead of seeding companies, or faking it, it's better to work with a real search."
@@ -405,11 +409,10 @@ Serper (not stale Google claims) and do not overclaim verification that didn't h
 
 ## 3. Work In Progress
 
-Nothing is mid-implementation in the codebase itself. The search-based discovery work above
-has passed round-2 review and is being committed/pushed with a PR opening in the same
-session that finished this document. `git status` in this worktree, prior to that commit,
-shows exactly the files listed in the "Search-based discovery" subsection above as modified
-or new.
+Nothing is mid-implementation in the codebase itself. PR #4 (Google-based search-discovery)
+is merged. PR #5 (the Serper provider swap) has passed its own independent critic review
+(ACCEPT) and is committed, pushed, and open — awaiting merge, the one outstanding
+administrative step, not development work.
 
 **The original shared checkout** at `/home/bantamlak/my-repos/remote-job-aggregator` (as
 distinct from the worktree this document was written in) had, as of Phase 2's writing, two
@@ -732,10 +735,10 @@ a real employer's board.
 2. Read `CLAUDE.md` at the repo root (gitignored — present locally, not on GitHub; if it's
    missing, ask Bantamlak for a copy before proceeding, since it carries the authoritative
    project requirements and the mandatory branching/testing/review workflow).
-3. PR #3 (Phase 2) is merged to `main` as of this document. Check whether the search-based
-   discovery PR (opened by the same session that wrote this update, branch
-   `Bantamlak21/phase3-search-discovery-e451cddd`) has since been merged — if it has, this
-   document's Section 3 "being committed/pushed" language is stale; update it rather than
+3. PR #3 (Phase 2) and PR #4 (Google-based search-discovery) are merged to `main` as of this
+   document. Check whether PR #5 (the Serper provider swap, branch
+   `Bantamlak21/swap-search-provider-e451cddd`) has since been merged — if it has, this
+   document's Section 2/3 "open, not yet merged" language is stale; update it rather than
    trusting it. Also check whether a real `SERPER_API_KEY` has been provided since — if so,
    Section 8's `internal/search` known-issue entry needs the live-verification follow-up
    actually performed, not just planned.
