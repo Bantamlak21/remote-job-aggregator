@@ -3,6 +3,7 @@ package company_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -507,5 +508,124 @@ func TestTargetStoreGetByID_ReturnsErrNotFoundForMissingRow(t *testing.T) {
 	}
 	if target != nil {
 		t.Errorf("GetByID() returned a non-nil target alongside ErrNotFound")
+	}
+}
+
+// Regression test for a data-integrity gap found by adversarial review:
+// a second company submitting the same (ats_provider, external_board_id)
+// — reachable in practice through a discovery bug that mis-extracts a
+// board id — must never silently reassign the board's row to itself.
+// Before the fix, Upsert's ON CONFLICT DO UPDATE had no guard on
+// company_id and would happily rewrite the row.
+func TestTargetStoreUpsert_RejectsReassigningAnExistingBoardToADifferentCompany(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	store := company.NewTargetStore(db.Pool)
+
+	first := seedCompany(t, ctx, db, "Acme")
+	second := seedCompany(t, ctx, db, "Globex")
+
+	original, err := store.Upsert(ctx, company.TargetUpsertParams{
+		CompanyID:       first.ID,
+		ATSProvider:     "greenhouse",
+		ExternalBoardID: "shared-slug",
+		BoardURL:        "https://boards.greenhouse.io/shared-slug",
+	})
+	if err != nil {
+		t.Fatalf("Upsert() for the first company failed: %v", err)
+	}
+
+	_, err = store.Upsert(ctx, company.TargetUpsertParams{
+		CompanyID:       second.ID,
+		ATSProvider:     "greenhouse",
+		ExternalBoardID: "shared-slug",
+		BoardURL:        "https://boards.greenhouse.io/hijacked",
+	})
+	if err == nil {
+		t.Fatal("Upsert() for the second company succeeded, want it rejected: this would reassign the first company's board")
+	}
+	if !errors.Is(err, company.ErrTargetCompanyMismatch) {
+		t.Errorf("error = %v, want it to wrap company.ErrTargetCompanyMismatch", err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("company %d", first.ID)) {
+		t.Errorf("error = %q, want it to name the company (%d) that actually owns the board", err, first.ID)
+	}
+
+	// The row must be completely untouched by the rejected attempt — not
+	// just "still owned by the first company" but not even its board_url
+	// leaked through.
+	unchanged, err := store.GetByID(ctx, original.ID)
+	if err != nil {
+		t.Fatalf("GetByID() after the rejected upsert failed: %v", err)
+	}
+	if unchanged.CompanyID != first.ID {
+		t.Errorf("CompanyID = %d after the rejected upsert, want it still %d", unchanged.CompanyID, first.ID)
+	}
+	if unchanged.BoardURL != "https://boards.greenhouse.io/shared-slug" {
+		t.Errorf("BoardURL = %q after the rejected upsert, want the original URL unchanged, not the hijack attempt's", unchanged.BoardURL)
+	}
+}
+
+func TestTargetStoreUpsert_SameCompanyCanStillUpdateItsOwnTarget(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	store := company.NewTargetStore(db.Pool)
+	c := seedCompany(t, ctx, db, "Acme")
+
+	if _, err := store.Upsert(ctx, company.TargetUpsertParams{
+		CompanyID:       c.ID,
+		ATSProvider:     "greenhouse",
+		ExternalBoardID: "acme",
+		BoardURL:        "https://boards.greenhouse.io/acme",
+	}); err != nil {
+		t.Fatalf("first Upsert() failed: %v", err)
+	}
+
+	updated, err := store.Upsert(ctx, company.TargetUpsertParams{
+		CompanyID:       c.ID,
+		ATSProvider:     "greenhouse",
+		ExternalBoardID: "acme",
+		BoardURL:        "https://boards.greenhouse.io/acme-new",
+	})
+	if err != nil {
+		t.Fatalf("second Upsert() by the SAME company failed: %v — the WHERE guard must not reject same-company updates", err)
+	}
+	if updated.BoardURL != "https://boards.greenhouse.io/acme-new" {
+		t.Errorf("BoardURL = %q, want it updated to the new value", updated.BoardURL)
+	}
+}
+
+func TestTargetStoreGetByProviderAndBoard_ReturnsStoredTarget(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	c := seedCompany(t, ctx, db, "Acme")
+	store := company.NewTargetStore(db.Pool)
+
+	created, err := store.Upsert(ctx, company.TargetUpsertParams{
+		CompanyID:       c.ID,
+		ATSProvider:     "greenhouse",
+		ExternalBoardID: "acme",
+	})
+	if err != nil {
+		t.Fatalf("Upsert() failed: %v", err)
+	}
+
+	got, err := store.GetByProviderAndBoard(ctx, "greenhouse", "  ACME  ")
+	if err != nil {
+		t.Fatalf("GetByProviderAndBoard() failed: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("GetByProviderAndBoard() id = %d, want %d", got.ID, created.ID)
+	}
+}
+
+func TestTargetStoreGetByProviderAndBoard_ReturnsErrNotFoundForMissingRow(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	store := company.NewTargetStore(db.Pool)
+
+	_, err := store.GetByProviderAndBoard(ctx, "greenhouse", "does-not-exist")
+	if !errors.Is(err, company.ErrNotFound) {
+		t.Fatalf("GetByProviderAndBoard() error = %v, want it to wrap company.ErrNotFound", err)
 	}
 }

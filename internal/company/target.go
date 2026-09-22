@@ -92,6 +92,20 @@ const targetColumns = `id, company_id, ats_provider, external_board_id, board_ur
 //     nil parameter into '{}' to satisfy the NOT NULL column, so EXCLUDED
 //     could no longer tell "no metadata supplied" from "empty metadata
 //     supplied". $5 still can.
+//
+// The WHERE guard is the fix for a data-integrity gap found by
+// adversarial review: without it, a caller that (through a bug
+// upstream — a URL-parsing mistake, a search result mismatch — this
+// project has already had one) submits the same (ats_provider,
+// external_board_id) under a DIFFERENT company_id would silently
+// reassign an existing board's row to that other company, corrupting
+// the original company's data with no error. The WHERE guard makes
+// Postgres skip the UPDATE entirely when company_id doesn't match the
+// existing row; Upsert below detects that (verified directly against a
+// real database: ON CONFLICT DO UPDATE ... WHERE, when the guard
+// excludes the row, makes RETURNING produce zero rows, not the existing
+// row) and returns ErrTargetCompanyMismatch instead of silently
+// reporting success for a write that didn't happen.
 const upsertTargetQuery = `
 	INSERT INTO target_companies (company_id, ats_provider, external_board_id, board_url, discovery_metadata)
 	VALUES ($1, $2, $3, NULLIF($4, ''), COALESCE($5::jsonb, '{}'::jsonb))
@@ -99,6 +113,7 @@ const upsertTargetQuery = `
 		is_active          = true,
 		board_url          = COALESCE(EXCLUDED.board_url, target_companies.board_url),
 		discovery_metadata = COALESCE($5::jsonb, target_companies.discovery_metadata)
+	WHERE target_companies.company_id = EXCLUDED.company_id
 	RETURNING ` + targetColumns
 
 // Upsert registers an ATS board for a company, or updates the existing
@@ -143,10 +158,30 @@ func (s *TargetStore) Upsert(ctx context.Context, params TargetUpsertParams) (*T
 		metadata,
 	))
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The WHERE guard blocked this: a row already exists for
+			// (provider, boardID) under a different company_id. Re-fetch
+			// purely to name which company it actually belongs to in the
+			// error — this has no bearing on correctness, since Postgres
+			// already decided atomically not to write; a stale read here
+			// could only produce a slightly outdated error message, never
+			// a wrong write.
+			if existing, getErr := s.GetByProviderAndBoard(ctx, provider, boardID); getErr == nil {
+				return nil, fmt.Errorf("company: upserting target %s/%s: already registered to company %d, refusing to reassign to company %d: %w",
+					provider, boardID, existing.CompanyID, params.CompanyID, ErrTargetCompanyMismatch)
+			}
+			return nil, fmt.Errorf("company: upserting target %s/%s: %w", provider, boardID, ErrTargetCompanyMismatch)
+		}
 		return nil, fmt.Errorf("company: upserting target %s/%s: %w", provider, boardID, err)
 	}
 	return t, nil
 }
+
+// ErrTargetCompanyMismatch is returned by Upsert when (ats_provider,
+// external_board_id) already belongs to a different company than the
+// one in params — Upsert never reassigns an existing board to a new
+// company silently.
+var ErrTargetCompanyMismatch = errors.New("company: target already registered to a different company")
 
 const getTargetByIDQuery = `SELECT ` + targetColumns + ` FROM target_companies WHERE id = $1`
 
@@ -159,6 +194,23 @@ func (s *TargetStore) GetByID(ctx context.Context, id int64) (*TargetCompany, er
 			return nil, fmt.Errorf("company: get target by id %d: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("company: get target by id %d: %w", id, err)
+	}
+	return t, nil
+}
+
+const getTargetByProviderAndBoardQuery = `SELECT ` + targetColumns + `
+	FROM target_companies WHERE ats_provider = $1 AND lower(btrim(external_board_id)) = lower(btrim($2))`
+
+// GetByProviderAndBoard returns the target company for the given
+// provider+board id (case- and whitespace-insensitively, matching
+// Upsert's own identity rule), or an error wrapping ErrNotFound.
+func (s *TargetStore) GetByProviderAndBoard(ctx context.Context, provider, boardID string) (*TargetCompany, error) {
+	t, err := scanTarget(s.pool.QueryRow(ctx, getTargetByProviderAndBoardQuery, provider, boardID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("company: get target %s/%s: %w", provider, boardID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("company: get target %s/%s: %w", provider, boardID, err)
 	}
 	return t, nil
 }

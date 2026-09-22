@@ -47,6 +47,9 @@ aggregator migrate-force <version>    # clear a "dirty" schema_migrations state
 aggregator discover [seed-file]       # validate candidate ATS boards from a seed file
                                        # (default configs/seed_companies.json) and persist
                                        # the ones that respond
+aggregator search-discover [names-file]  # find each company's ATS board via Google Custom
+                                       # Search (default configs/company_names.txt), then
+                                       # the same validate-and-persist as discover
 ```
 
 `migrate-down` always requires `--yes`: rolling back even one migration is
@@ -102,6 +105,8 @@ raw credential even when the value itself was the problem.
 | `HTTP_MAX_RESPONSE_SIZE` | no | `5242880` (5 MiB) | bytes; independent of `HTTP_TIMEOUT` — this bounds size, not time; must be positive |
 | `HTTP_USER_AGENT` | no | `remote-job-aggregator/1.0 (+https://github.com/Bantamlak12/remote-job-aggregator)` | sent on every outbound request; must not be blank |
 | `DISCOVERY_WORKERS` | no | `5` | bounded concurrency for discovery's HTTP probes; 1 – 100 |
+| `GOOGLE_SEARCH_API_KEY` | no | — | only for `search-discover`; must be set together with `GOOGLE_SEARCH_ENGINE_ID`, or neither |
+| `GOOGLE_SEARCH_ENGINE_ID` | no | — | only for `search-discover`; the Programmable Search Engine's "cx" id |
 | `TEST_DATABASE_URL` | no | — | integration tests only; database name must end in `_test` |
 
 Config values passed via `DATABASE_URL`'s own query string (e.g.
@@ -214,6 +219,38 @@ starting template.
 Concurrency is bounded by `DISCOVERY_WORKERS`, independent of the
 database pool or HTTP client's own connection pool.
 
+### Search-based discovery
+
+```bash
+aggregator search-discover                          # uses configs/company_names.txt
+aggregator search-discover path/to/custom_names.txt
+```
+
+Requires `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_ENGINE_ID` (see
+`.env.example` for the free, no-card-required setup steps). Given just a
+plain-text list of company names — one per line, `#` for comments — this
+finds each company's ATS board via the Google Custom Search JSON API
+instead of requiring a human to look up and type the full
+`board_url`/`ats_provider`/`external_board_id` record `discover`'s seed
+file needs. For each name it searches
+`"<name>" (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com)`,
+takes the first result whose URL matches a known ATS host pattern,
+and extracts the provider + board slug from it (`internal/discovery/search.go`'s
+`knownProviders` patterns) — deterministic pattern matching on the URL,
+not an LLM parsing search results, since that's a solved lookup problem
+that doesn't need one. The resulting candidates go through the exact
+same `Discoverer.Run` pipeline `discover` uses: HEAD/GET validation,
+then persistence. A company search can fail (quota exhausted, no known
+board found in the results) without stopping the rest — same
+partial-success-exits-0 policy as `discover`.
+
+Searches run sequentially, not concurrently: Google's free tier is a
+100-queries-a-day budget, not a throughput problem worth a worker pool
+over. `configs/company_names.txt` ships with two names
+(`internal/company`'s Phase 2 examples) that are not yet verified through
+this specific command — that needs a real API key this environment
+doesn't have; verify them yourself once you've set credentials up.
+
 ## Docker
 
 ```bash
@@ -252,20 +289,28 @@ Modular monolith, one deployable binary. Package boundaries so far:
 - `internal/company` — domain types and the only code that writes to
   `companies`/`target_companies`. `Store`/`TargetStore.Upsert` are each a
   single atomic `INSERT ... ON CONFLICT`, never a check-then-insert.
-- `internal/discovery` — turns a list of candidate ATS boards
-  (`LoadSeedCandidates`) into persisted companies/targets, via a bounded
-  worker pool over `internal/company`'s repositories and
-  `internal/httpclient`. Depends on both `company` and `httpclient`
-  through small consumer-defined interfaces (`CompanyUpserter`,
-  `TargetUpserter`), not their concrete types, so its own orchestration
-  logic (HEAD/GET fallback, concurrency bound, error propagation) is
-  tested with fakes instead of a database.
+- `internal/search` — wraps the Google Custom Search JSON API. Knows
+  nothing about ATS providers either; returns raw `(title, URL, snippet)`
+  results for a query string, same as any other search API client.
+- `internal/discovery` — turns a list of candidates into persisted
+  companies/targets via a bounded worker pool over `internal/company`'s
+  repositories and `internal/httpclient`. Two sources feed it the same
+  `Candidate` type: `LoadSeedCandidates` (a hand-curated JSON file) and
+  `CandidatesFromSearch` (a plain list of company names, resolved to a
+  board URL via `internal/search` and a set of known-ATS-host regex
+  patterns). Depends on `company`, `httpclient`, and `search` through
+  small consumer-defined interfaces (`CompanyUpserter`, `TargetUpserter`,
+  `SearchClient`), not their concrete types, so its own orchestration
+  logic (HEAD/GET fallback, concurrency bound, error propagation, URL
+  pattern matching) is tested with fakes instead of a database or a real
+  API key.
 - `migrations/` — versioned SQL, embedded via `go:embed`.
-- `configs/` — operator-editable data files, starting with
-  `seed_companies.json`.
+- `configs/` — operator-editable data files: `seed_companies.json` (full
+  board records) and `company_names.txt` (just names, for
+  `search-discover`).
 - `cmd/aggregator` — composition root: wires config → logger → pool,
-  dispatches `run`/`migrate-up`/`migrate-down`/`migrate-force`/`discover`,
-  handles graceful shutdown.
+  dispatches `run`/`migrate-up`/`migrate-down`/`migrate-force`/
+  `discover`/`search-discover`, handles graceful shutdown.
 
 `ats`, `ingestion`, `job`, `filtering`, `ranking`, `notification`, and
 `scheduler` do not exist yet — they're created when the phase that needs

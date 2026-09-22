@@ -1,0 +1,15 @@
+# One company name per line. Blank lines and lines starting with "#"
+# are ignored. search-discover looks up each name via the Google Custom
+# Search API and, if it finds a Greenhouse/Lever/Ashby board in the
+# results, validates and persists it — no board_url/ats_provider/
+# external_board_id needed, unlike configs/seed_companies.json.
+#
+# NOTE: unlike seed_companies.json's two examples, these have NOT yet
+# been run through search-discover for real — that needs a live
+# GOOGLE_SEARCH_API_KEY/GOOGLE_SEARCH_ENGINE_ID, which this environment
+# doesn't have. Both are already known (from Phase 2) to have a real,
+# live board, so they're a reasonable first test once credentials are
+# available — but until then, treat this file as unverified, not as a
+# shipped, checked example.
+Spotify
+Airbnb

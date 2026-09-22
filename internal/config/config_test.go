@@ -16,7 +16,7 @@ func clearAll(t *testing.T) {
 		"APP_ENV", "DATABASE_URL", "DB_MAX_OPEN_CONNS", "DB_MIN_CONNS",
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
-		"HTTP_USER_AGENT", "DISCOVERY_WORKERS",
+		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "GOOGLE_SEARCH_API_KEY", "GOOGLE_SEARCH_ENGINE_ID",
 	} {
 		t.Setenv(key, "")
 	}
@@ -434,5 +434,72 @@ func TestDatabaseConfig_LogValuePassesThroughURLWithoutCredentials(t *testing.T)
 	got := d.LogValue().String()
 	if !strings.Contains(got, "localhost:5432/jobs") {
 		t.Errorf("LogValue() = %q, want it to preserve a credential-free URL", got)
+	}
+}
+
+func TestLoad_SearchConfigDefaultsToUnconfigured(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.Search.Configured() {
+		t.Error("Search.Configured() = true, want false when neither env var is set")
+	}
+	if cfg.Search.GoogleAPIKey != "" || cfg.Search.GoogleSearchEngineID != "" {
+		t.Errorf("Search = %+v, want both fields empty by default", cfg.Search)
+	}
+}
+
+func TestLoad_SearchConfigOverridesRespected(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("GOOGLE_SEARCH_API_KEY", "test-api-key")
+	t.Setenv("GOOGLE_SEARCH_ENGINE_ID", "test-cx")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if !cfg.Search.Configured() {
+		t.Error("Search.Configured() = false, want true when both env vars are set")
+	}
+	if cfg.Search.GoogleAPIKey != "test-api-key" || cfg.Search.GoogleSearchEngineID != "test-cx" {
+		t.Errorf("Search = %+v, unexpected values", cfg.Search)
+	}
+}
+
+func TestLoad_SearchConfigRejectsOnlyOneVarSet(t *testing.T) {
+	for _, setKey := range []string{"GOOGLE_SEARCH_API_KEY", "GOOGLE_SEARCH_ENGINE_ID"} {
+		t.Run(setKey, func(t *testing.T) {
+			clearAll(t)
+			t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+			t.Setenv(setKey, "only-one-set")
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected an error when only %s is set, got nil", setKey)
+			}
+			if !strings.Contains(err.Error(), "must both be set, or neither") {
+				t.Errorf("error = %q, want it to explain both vars are required together", err.Error())
+			}
+		})
+	}
+}
+
+func TestSearchConfig_LogValueRedactsAPIKey(t *testing.T) {
+	s := SearchConfig{GoogleAPIKey: "super-secret-key", GoogleSearchEngineID: "public-cx-id"}
+
+	got := s.LogValue().String()
+	if strings.Contains(got, "super-secret-key") {
+		t.Errorf("LogValue() leaked the API key: %s", got)
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Errorf("LogValue() = %q, want it to contain REDACTED", got)
+	}
+	if !strings.Contains(got, "public-cx-id") {
+		t.Errorf("LogValue() = %q, want it to preserve the non-secret search engine ID", got)
 	}
 }

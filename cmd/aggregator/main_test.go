@@ -152,6 +152,48 @@ func TestRunDiscover_EmptySeedFileSucceedsWithoutTouchingTheDatabase(t *testing.
 	}
 }
 
+func TestRunSearchDiscover_RejectsTooManyArgs(t *testing.T) {
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	err := run(context.Background(), []string{"search-discover", "names.txt", "extra"})
+	if err == nil {
+		t.Fatal(`search-discover with two positional args = nil, want an error`)
+	}
+}
+
+func TestRunSearchDiscover_RequiresSearchCredentials(t *testing.T) {
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("GOOGLE_SEARCH_API_KEY", "")
+	t.Setenv("GOOGLE_SEARCH_ENGINE_ID", "")
+
+	err := run(context.Background(), []string{"search-discover"})
+	if err == nil {
+		t.Fatal("search-discover without search credentials = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "GOOGLE_SEARCH_API_KEY") {
+		t.Errorf("error = %q, want it to mention the missing credentials", err.Error())
+	}
+}
+
+func TestRunSearchDiscover_MissingNamesFileFailsBeforeTouchingTheDatabase(t *testing.T) {
+	clearRequiredEnv(t)
+	// A bad DATABASE_URL that would fail to connect if this ever got that
+	// far — it must not, since the names file load happens first.
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:1/does-not-exist")
+	t.Setenv("GOOGLE_SEARCH_API_KEY", "test-key")
+	t.Setenv("GOOGLE_SEARCH_ENGINE_ID", "test-cx")
+
+	err := run(context.Background(), []string{"search-discover", "/nonexistent/names.txt"})
+	if err == nil {
+		t.Fatal("search-discover with a nonexistent names file = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "opening company names file") {
+		t.Errorf("error = %q, want it to mention opening the names file", err.Error())
+	}
+}
+
 func TestCloseWithTimeout_ReturnsNilOnPromptClose(t *testing.T) {
 	err := closeWithTimeout(time.Second, func() {})
 	if err != nil {

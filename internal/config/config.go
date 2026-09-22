@@ -140,6 +140,40 @@ type DiscoveryConfig struct {
 	Workers int
 }
 
+// SearchConfig configures the Google Custom Search JSON API client used
+// by the search-based discovery mechanism. Both fields are optional —
+// unlike DATABASE_URL, most commands (run, migrate-*, the seed-file
+// discover) never need them, so Load does not require them — but they
+// are only ever meaningful together: an API key with no search engine
+// ID (or vice versa) can't make a real request, so Load rejects that
+// combination rather than deferring the failure to the first search
+// call.
+type SearchConfig struct {
+	GoogleAPIKey         string
+	GoogleSearchEngineID string
+}
+
+// LogValue redacts the API key so a SearchConfig can be logged directly
+// without leaking a credential — same reasoning as DatabaseConfig's
+// LogValue, applied before this struct has ever actually been logged
+// anywhere, since that mistake is cheaper to prevent than to catch.
+func (s SearchConfig) LogValue() slog.Value {
+	key := s.GoogleAPIKey
+	if key != "" {
+		key = "REDACTED"
+	}
+	return slog.GroupValue(
+		slog.String("google_api_key", key),
+		slog.String("google_search_engine_id", s.GoogleSearchEngineID),
+	)
+}
+
+// Configured reports whether both search credentials are present, i.e.
+// whether search-based discovery can actually run.
+func (s SearchConfig) Configured() bool {
+	return s.GoogleAPIKey != "" && s.GoogleSearchEngineID != ""
+}
+
 // Config is the fully validated, typed configuration for the aggregator
 // process. Construct it once via Load and pass it down explicitly; nothing
 // in this codebase should read os.Getenv outside this package.
@@ -150,6 +184,7 @@ type Config struct {
 	Shutdown  ShutdownConfig
 	HTTP      HTTPConfig
 	Discovery DiscoveryConfig
+	Search    SearchConfig
 }
 
 // Load reads and validates configuration from the process environment.
@@ -257,6 +292,12 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("DISCOVERY_WORKERS must be between 1 and 100, got %d", discoveryWorkersRaw))
 	}
 
+	googleAPIKey := getEnv("GOOGLE_SEARCH_API_KEY", "")
+	googleSearchEngineID := getEnv("GOOGLE_SEARCH_ENGINE_ID", "")
+	if (googleAPIKey == "") != (googleSearchEngineID == "") {
+		errs = append(errs, errors.New("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID must both be set, or neither"))
+	}
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
@@ -286,6 +327,10 @@ func Load() (*Config, error) {
 		},
 		Discovery: DiscoveryConfig{
 			Workers: discoveryWorkersRaw,
+		},
+		Search: SearchConfig{
+			GoogleAPIKey:         googleAPIKey,
+			GoogleSearchEngineID: googleSearchEngineID,
 		},
 	}, nil
 }

@@ -1,6 +1,6 @@
 # Project Status
 
-_Last updated: 2026-09-21._
+_Last updated: 2026-09-22._
 
 ## 1. Project Overview
 
@@ -15,10 +15,13 @@ Target scale (architectural, not yet exercised): 10,000+ companies, 100,000+ job
 loading the full dataset into memory. Tech stack: Go (stdlib-first), PostgreSQL, Docker.
 Full requirements live in the repo's (gitignored, not committed) `CLAUDE.md`.
 
-**Phase 1 and Phase 2 are implemented** (Phase 2 is committed and pushed with an open PR,
-not yet merged to `main` — see Section 2). There is still no ATS integration, ingestion,
-filtering, ranking, scheduling, or notification code: nothing in the system yet reads or
-stores an actual job posting.
+**Phase 1 and Phase 2 are merged to `main`.** A search-based discovery mechanism (an
+extension of Phase 2's discovery, addressing the explicit requirement to find companies via
+a real web search instead of a hand-curated seed file) is implemented, reviewed, and — as of
+this document — being committed/pushed with a PR opening; see Section 2's "Search-based
+discovery" subsection. There is still no ATS integration, ingestion, filtering, ranking,
+scheduling, or notification code: nothing in the system yet reads or stores an actual job
+posting.
 
 ## 2. Completed Work
 
@@ -116,11 +119,9 @@ before merge.
 
 ### Phase 2: Company persistence, HTTP client, discovery
 
-**Status: complete, committed (`e47e17d`, "feat: add company discovery"), pushed to
-`Bantamlak21/phase2-company-discovery-e451cddd`, open as PR #3
-(https://github.com/Bantamlak12/remote-job-aggregator/pull/3) — not yet merged to `main`.**
-No schema change (no new migration): Phase 2 is application code over the tables Phase 1
-already created.
+**Status: complete, merged to `main` via PR #3 (commit `e47e17d`, merge commit `d84bab9`,
+2026-09-22).** No schema change (no new migration): Phase 2 is application code over the
+tables Phase 1 already created.
 
 **`internal/httpclient`** — the one pooled, retrying HTTP client every outbound-network
 package shares (discovery today; ATS ingestion in a later phase).
@@ -245,33 +246,155 @@ reproduction by stack name — plus three non-blocking cosmetic observations, wh
 addressed (a test name that only checked a lower bound, a missing explicit
 `MaxRedirects=0` test, a misleading test failure message).
 
+---
+
+### Search-based discovery (extends Phase 2, this session)
+
+**Status: complete, reviewed (two rounds of independent adversarial critic review, round 2
+ACCEPT), being committed/pushed with a PR opening as of this document.** No schema
+migration; one query-level behavior change to an existing table (see below).
+
+**Why this exists:** the user explicitly redirected discovery away from hand-curated seed
+data — "Instead of seeding companies, or faking it, it's better to work with a real search."
+— toward a real web search API. Resolved to the Google Custom Search JSON API (the only
+option that is both genuinely free and requires no credit card, per the user's own
+constraint: "Any API as long as it is free and real").
+
+**`internal/search`** (new package) — wraps the Google Custom Search JSON API.
+- `Client.Search(ctx, query) ([]Result, error)`. Config is `APIKey` + `SearchEngineID`.
+- The API key travels as the `X-goog-api-key` HTTP header, never as a URL query parameter —
+  found during round-1 adversarial review that a query-string key leaks through Go's own
+  `*url.Error` on network failures/timeouts (the full request URL, query string included, is
+  embedded in that error's string before any `%w` wrapping ever sees it — no downstream
+  redaction can close this once the key is in the URL). Verified against Google's own Cloud
+  documentation, which recommends the header form for exactly this reason.
+- Quota-exceeded detection (`ErrQuotaExceeded`) recognizes both the newer
+  `status: "RESOURCE_EXHAUSTED"` shape and the classic `errors[].reason` shape
+  (`dailyLimitExceeded`, etc.) — the classic shape was a gap found in round-1 review.
+- Tests: `internal/search/google_test.go` (10 tests) — result parsing, required query
+  params, the header-not-URL key placement, a real network-error probe against a
+  nothing-listens-here address confirming the key never appears in the resulting error
+  string, both quota-exceeded shapes, non-JSON error bodies, context cancellation.
+- **Not yet verified against the real googleapis.com endpoint** — no
+  `GOOGLE_SEARCH_API_KEY`/`GOOGLE_SEARCH_ENGINE_ID` exists in this environment. All
+  verification so far is against fake `httptest` servers. This is a named, outstanding gap —
+  see Section 8.
+
+**`internal/discovery/search.go`** (new file) — turns company names into `Candidate`s by
+searching and recognizing a known ATS board URL (Greenhouse, Lever, Ashby) in the results,
+via regex — deterministic pattern matching, never an LLM call, per CLAUDE.md's LLM-usage
+rule (this is a same-input-same-output extraction problem).
+- `buildSearchQuery`: quotes the company name, restricts via `site:` to the three known ATS
+  hosts, and strips `"`/newlines from the name first — closing a low-severity
+  query-injection vector found in round-1 review (an operator-supplied name containing a
+  literal `"` could otherwise break out of the quoted phrase and inject extra `OR`/`site:`
+  terms).
+- The three URL-recognizing regexes are case-insensitive on scheme/host (hosts are
+  case-insensitive per RFC — a bare case-sensitive match missed real URLs, found in review)
+  and boundary-anchored after the slug (`(?:[/?#]|$)`) so a URL like
+  `boards.greenhouse.io/acme.inc` is rejected outright rather than silently truncated to the
+  wrong slug `acme` — also found in review.
+- `greenhouseReservedSlugs` rejects Greenhouse's own `embed` path segment
+  (`boards.greenhouse.io/embed/job_board?for=<company>`, a real, commonly-indexed
+  embeddable-widget URL) from ever being treated as a company's board slug — this was
+  round-1's first BLOCKER: without it, two different companies whose search results both
+  surfaced an embed URL would collide on the same fake "embed" slug and corrupt each other's
+  `target_companies` row.
+- `CandidatesFromSearch` runs searches sequentially, not concurrently — Google's free tier is
+  a 100-queries/day budget, not a throughput problem worth a worker pool over. One company's
+  search failure never stops the batch; every name is attempted and every per-name error
+  collected.
+- Tests: `internal/discovery/search_test.go` — provider recognition (all three ATS hosts),
+  the embed-URL rejection (plus proof a real board is still found when an embed URL is also
+  present in the same result set), case-insensitive host matching, the boundary-anchor
+  truncation rejection, the nonexistent-`www.`-subdomain rejection, query sanitization,
+  per-company error isolation, context cancellation.
+
+**`internal/discovery/names.go`** (new file) — `LoadCompanyNames(path)` reads a plain-text,
+newline-delimited company-name list (`configs/company_names.txt` by default): blank lines
+and `#`-comments ignored, case-insensitive dedup (first spelling wins). Tests:
+`internal/discovery/names_test.go` — valid file, comments/blanks, dedup, missing file, empty
+file (→ `ErrNoCompanyNames`).
+
+**`internal/company/target.go` — round-1 BLOCKER 2's repository-level fix.** The embed-slug
+collision above is one way two companies could end up claiming the same
+`(ats_provider, external_board_id)`; the regex-level fix above closes that one specific
+trigger, but the repository itself had no defense against the general case. Added a
+`WHERE target_companies.company_id = EXCLUDED.company_id` guard to `TargetStore.Upsert`'s
+`ON CONFLICT DO UPDATE`, so a conflicting board already owned by a *different* company is
+never silently reassigned. Detected via `pgx.ErrNoRows` (empirically verified against live
+Postgres: `RETURNING` on a `WHERE`-guard-blocked `ON CONFLICT DO UPDATE` produces zero rows,
+not the existing row's values), surfaced as the new `ErrTargetCompanyMismatch`. Added
+`TargetStore.GetByProviderAndBoard` to build that error's "already registered to company N"
+message. Tests (against real Postgres): the reassignment attempt is rejected and the
+original row's `company_id`/`board_url` are provably unchanged; a legitimate same-company
+re-upsert still succeeds; the new lookup method's found/not-found paths.
+
+**`internal/config`** — added `SearchConfig` (`GoogleAPIKey`, `GoogleSearchEngineID`,
+`Configured()`, redacting `LogValue()`). `Load()` requires both env vars set together or
+neither (`GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID`). Round-1 review flagged that the
+config-level redaction test only called `.LogValue().String()` directly, never proving
+redaction survives real `slog` attribute resolution — fixed with
+`TestNewLogger_RedactsSearchConfigCredentials` in `internal/observability/logger_test.go`
+(mirrors the existing `DatabaseConfig` version), and `cfg.Search` is now actually logged in
+`runSearchDiscover` so `LogValue()` is exercised in real code, not just tests.
+
+**CLI — `aggregator search-discover [company-names-file]`** — loads company names, searches
+each, validates+persists any board found via the same `Discoverer.Run` pipeline
+`discover` uses (HEAD/GET probing, then persistence) — "how a candidate was found" (seed
+file vs. search) is fully decoupled from "what happens once we have one." Requires
+`cfg.Search.Configured()`; fails fast, before touching the database, if company names can't
+be loaded or no board is found for any of them. Tests:
+`TestRunSearchDiscover_RejectsTooManyArgs`, `_RequiresSearchCredentials`,
+`_MissingNamesFileFailsBeforeTouchingTheDatabase`.
+
+**`configs/company_names.txt`** (new) — two example names (Spotify, Airbnb), explicitly
+documented in the file's own header comment as **unverified against the real search API**
+(unlike `configs/seed_companies.json`'s live-verified examples) — no Google API credentials
+exist in this environment to run them for real.
+
+**Review process.** Two rounds of independent adversarial critic review, following
+CLAUDE.md's fan-out + harsh-critic loop for large work. Round 1 (REJECT): found the two
+blockers and five should-fix items described above. Round 2 (ACCEPT, cold, no access to the
+builder's reasoning): independently re-verified every fix — including writing standalone
+scratch Go regex probes to adversarially hunt for a boundary-anchor bypass (tried
+`acme.inc`, `acme%2e`, a trailing dot, a port number, embedded control characters,
+prefix/suffix host-injection attempts — found none), tracing the actual leak path in
+`internal/httpclient`'s retry-exhausted error to confirm the original vulnerability was real
+and that moving the key out of the URL (not just redacting `req.URL`) is what actually closes
+it, and running the full test suite including `internal/company`'s DB-guard test against a
+real Postgres instance.
+
 ## 3. Work In Progress
 
-Nothing is mid-implementation in the codebase itself. `git status` in this worktree is clean;
-Phase 2's PR (#3) is open and passing, awaiting review/merge — that merge is the one
-outstanding administrative step, not development work.
+Nothing is mid-implementation in the codebase itself. The search-based discovery work above
+has passed round-2 review and is being committed/pushed with a PR opening in the same
+session that finished this document. `git status` in this worktree, prior to that commit,
+shows exactly the files listed in the "Search-based discovery" subsection above as modified
+or new.
 
 **The original shared checkout** at `/home/bantamlak/my-repos/remote-job-aggregator` (as
-distinct from the worktree this document was written in) still has, as of this writing, two
-files with uncommitted local modifications that predate this document and were not made by
-this session (last checked 2026-09-21, unchanged since first noted 2026-09-20):
+distinct from the worktree this document was written in) had, as of Phase 2's writing, two
+files with uncommitted local modifications not made by any session:
 
 - `.gitignore` — a `.claude/` ignore entry not present in the committed version.
 - `Dockerfile` — cosmetic blank-line reformatting only.
 
-Not touched by this session; if the `.claude/` addition is wanted, commit it properly through
-a worktree rather than leaving it dangling in the shared checkout.
+Not re-checked this session; not touched by this session either way.
 
 A Postgres container (`remote-job-aggregator-db-1`) has been running continuously since
 before this document was first written and was used, read-only with respect to its role as
-shared test infrastructure, throughout Phase 2's development and review. Its `aggregator_test`
-database is currently clean (0 rows in `companies`/`target_companies`/`jobs`) — every test run
-against it cleaned up after itself.
+shared test infrastructure, throughout Phase 2's and this session's development and review.
+Its `aggregator_test` database is clean after every test run (each test cleans up after
+itself).
 
 ## 4. Remaining Implementation Roadmap
 
-Ordered by dependency, per the original project requirements. Phase 2 is complete — see
-Section 2 — and removed from this list.
+Ordered by dependency, per the original project requirements. Phase 2 (and the search-based
+discovery extension to it, this session) is complete — see Section 2 — and removed from this
+list. "Phase 3" below is the original roadmap's ATS-integration phase; it is unrelated to
+and not renumbered by the search-discovery work, which was an extension of Phase 2's
+discovery mechanism, not a new phase.
 
 ### Phase 3 — ATS integration & ingestion
 - **Objective:** fetch and normalize jobs from Greenhouse (first provider), run ingestion
@@ -364,8 +487,12 @@ firing only when a column other than `updated_at` itself actually changed.
 - No indexes/tables for ranking, scheduling state, or notification dedup — belong to
   Phases 5–6.
 
-**Database-related pending work:** none. The next schema change is the Phase 4
-`job_eligibility` migration.
+**Database-related pending work:** none requiring a migration. This session changed
+`target_companies` upsert *behavior* (not schema): `TargetStore.Upsert`'s
+`ON CONFLICT DO UPDATE` now carries a `WHERE target_companies.company_id =
+EXCLUDED.company_id` guard, refusing to reassign a board already owned by a different
+company (see Section 2's "Search-based discovery" subsection). The next schema change is
+still the Phase 4 `job_eligibility` migration.
 
 ## 6. Current Architecture
 
@@ -374,25 +501,31 @@ firing only when a column other than `updated_at` itself actually changed.
 ```
 cmd/aggregator (composition root)
     │
-    ├─ internal/config          (env → validated Config)
+    ├─ internal/config          (env → validated Config, incl. SearchConfig)
     ├─ internal/observability   (slog construction)
     ├─ internal/database        (pgxpool + migration runner)
     │       │
     │       └─ migrations/      (embedded SQL, go:embed)
     ├─ internal/httpclient      (pooled, retrying HTTP client)
+    ├─ internal/search          (Google Custom Search JSON API client)
     ├─ internal/company         (Store/TargetStore over companies/target_companies)
-    ├─ internal/discovery       (seed candidates → probe → persist, via company + httpclient)
-    └─ configs/                 (seed_companies.json)
+    ├─ internal/discovery       (seed OR search → candidates → probe → persist)
+    └─ configs/                 (seed_companies.json, company_names.txt)
 ```
 
 One deployable binary. `cmd/aggregator/main.go` is the only place that wires concrete
 implementations together. Nothing outside `internal/database` touches `pgxpool` directly;
-nothing outside `internal/config` reads `os.Getenv`. `internal/discovery` depends on
-`internal/company` and `internal/httpclient` through small interfaces it defines itself
-(`CompanyUpserter`, `TargetUpserter`) rather than their concrete types — the consumer-defines-
-the-interface Go convention, chosen so discovery's own orchestration logic (HEAD/GET
-fallback, concurrency bound, error propagation) is unit-testable with fakes instead of always
-needing a database.
+nothing outside `internal/config` reads `os.Getenv`; nothing outside `internal/search` talks
+to the Google Custom Search API. `internal/discovery` depends on `internal/company`,
+`internal/httpclient`, and (for the search path) `internal/search` through small interfaces
+it defines itself (`CompanyUpserter`, `TargetUpserter`, `SearchClient`) rather than their
+concrete types — the consumer-defines-the-interface Go convention, chosen so discovery's own
+orchestration logic (HEAD/GET fallback, concurrency bound, error propagation, board-URL
+recognition) is unit-testable with fakes instead of always needing a database or a live
+Google API key. Two independent ways to produce a `Candidate` (`LoadSeedCandidates` from a
+JSON file, `CandidatesFromSearch` from a search) converge on the same `Discoverer.Run`
+pipeline — "how a candidate was found" is fully decoupled from "what happens once we have
+one."
 
 **Planned, not implemented:** `internal/ats`, `internal/ingestion`, `internal/job`,
 `internal/filtering`, `internal/ranking`, `internal/notification`, `internal/scheduler` — see
@@ -407,18 +540,25 @@ pool). No ingestion pipeline yet — that arrives in Phase 3.
 
 ## 7. Testing and Verification Status
 
-**Run and passing as of this document (2026-09-21, this worktree at commit `e47e17d`):**
+**Run and passing as of this document (2026-09-22, this worktree, search-discovery work not
+yet committed):**
 
 ```bash
 gofmt -l .                             # clean
 go build ./...                         # clean
 go vet ./...                           # clean
-go test ./...                          # all 7 packages ok, DB tests skip without TEST_DATABASE_URL
 TEST_DATABASE_URL=postgres://aggregator:aggregator@localhost:5432/aggregator_test \
-  go test -race -p 1 -count=1 ./...    # all 7 packages ok — 20 tests in internal/database,
-                                        #   27 in internal/company, 29 in internal/httpclient,
-                                        #   23 in internal/discovery, all under the race detector
+  go test -race -p 1 -count=1 ./...    # all 9 packages ok, real Postgres, race detector —
+                                        #   20 internal/database, 31 internal/company,
+                                        #   29 internal/httpclient, 37 internal/discovery,
+                                        #   27 internal/config, 10 internal/search,
+                                        #   8 internal/observability, 19 cmd/aggregator
 ```
+
+`internal/search` and the new tests in `internal/discovery`/`internal/company`/
+`internal/config`/`internal/observability`/`cmd/aggregator` are new/changed this session.
+All verified passing individually and as part of the full-suite run above; zero regressions
+in any pre-existing test.
 
 **`-p 1` is required** whenever `TEST_DATABASE_URL` is set and more than one package's tests
 run together: `internal/database` and `internal/company` both reset the shared
@@ -455,9 +595,13 @@ probed directly with `curl` (Greenhouse, Lever, Ashby, and a few others) to chec
 fallback claim; a from-scratch redirect-budget test matrix against `httptest` servers,
 independent of the checked-in test suite, to verify the `MaxRedirects` off-by-one fix.
 
-**Missing tests:** none within Phase 1 or Phase 2's own scope. Coverage will grow with each
-future phase (fake ATS servers for Phase 3, an eval suite for Phase 4's classifier, etc.) —
-none of that exists yet because none of that code exists yet.
+**Missing tests:** none within Phase 1, Phase 2, or the search-discovery extension's own
+scope — every behavior change in this session shipped with a regression test, per CLAUDE.md.
+`internal/search/google.go` has not been tested against the real, live Google API (see
+Section 8) — only against fake `httptest` servers; that gap is documented as such, not
+papered over with an unverified claim. Coverage will grow with each future phase (fake ATS
+servers for Phase 3, an eval suite for Phase 4's classifier, etc.) — none of that exists yet
+because none of that code exists yet.
 
 **Known failures:** none.
 
@@ -492,11 +636,35 @@ none of that exists yet because none of that code exists yet.
   the shipped example will start failing `discover` (gracefully — it logs and skips, doesn't
   crash) even though nothing in this repo is wrong. Worth a periodic manual re-check, not
   worth building automation around yet.
+- **`internal/search` has never been run against the real Google Custom Search API.** No
+  `GOOGLE_SEARCH_API_KEY`/`GOOGLE_SEARCH_ENGINE_ID` exists in this environment — these must
+  come from Bantamlak (Google Cloud Console → enable Custom Search API → API key;
+  Programmable Search Engine console → new engine → "Search the entire web" → the `cx` id;
+  both free, no card required — see `.env.example` and README.md's Discovery section for the
+  exact steps). Everything in this session was verified against fake `httptest` servers,
+  honestly documented as such. **Next session with real credentials should run
+  `search-discover` end to end** (e.g. against `configs/company_names.txt`'s two example
+  names) and confirm: the header-based auth is actually accepted by the real endpoint, the
+  response shape matches `apiResponse`'s assumptions, and — if it can be provoked without
+  burning the whole daily quota — that the classic `dailyLimitExceeded` error shape
+  (`quotaExceeded` in `internal/search/google.go`) is what Custom Search specifically
+  returns, which round-2 review confirmed is documented for the API family but not yet
+  observed from Custom Search itself.
+- **`configs/company_names.txt`'s two example names (Spotify, Airbnb) are unverified against
+  the real search API**, unlike `configs/seed_companies.json`'s live-verified examples — see
+  above. The file's own header comment says so.
 
 ## 9. Exact Next Step
 
-**Start Phase 3: build the `internal/ats` package with a Greenhouse client, and
-`internal/job` for the normalized job type.**
+**Two independent next steps — neither blocks the other:**
+
+1. **External, needs Bantamlak:** obtain real `GOOGLE_SEARCH_API_KEY`/
+   `GOOGLE_SEARCH_ENGINE_ID` and run `search-discover` end to end against the real Google
+   API — see Section 8's `internal/search` known-issue entry for exactly what that
+   verification should check. This does not block Phase 3 and can happen whenever
+   credentials become available.
+2. **Development, no external dependency: start Phase 3** — build the `internal/ats`
+   package with a Greenhouse client, and `internal/job` for the normalized job type.
 
 Why this and not `internal/ingestion` first: ingestion's job is to orchestrate "for each
 active target, fetch its jobs, normalize them, persist them" — it needs both something that
@@ -524,9 +692,13 @@ a real employer's board.
 2. Read `CLAUDE.md` at the repo root (gitignored — present locally, not on GitHub; if it's
    missing, ask Bantamlak for a copy before proceeding, since it carries the authoritative
    project requirements and the mandatory branching/testing/review workflow).
-3. Check whether PR #3 (Phase 2) has been merged since this document was last updated —
-   if it has, this document's "not yet merged to main" caveats in Sections 1–2 are stale;
-   update them rather than trusting them.
+3. PR #3 (Phase 2) is merged to `main` as of this document. Check whether the search-based
+   discovery PR (opened by the same session that wrote this update, branch
+   `Bantamlak21/phase3-search-discovery-e451cddd`) has since been merged — if it has, this
+   document's Section 3 "being committed/pushed" language is stale; update it rather than
+   trusting it. Also check whether real `GOOGLE_SEARCH_API_KEY`/`GOOGLE_SEARCH_ENGINE_ID`
+   have been provided since — if so, Section 8's `internal/search` known-issue entry needs
+   the live-verification follow-up actually performed, not just planned.
 4. Run the verification commands in [Section 7](#7-testing-and-verification-status) to
    confirm the state this document describes still matches reality — this document is a
    snapshot, not a live source of truth. If something doesn't match, trust the repository

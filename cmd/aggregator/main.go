@@ -21,12 +21,16 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/discovery"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/httpclient"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/observability"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]>"
 
-const defaultSeedFile = "configs/seed_companies.json"
+const (
+	defaultSeedFile         = "configs/seed_companies.json"
+	defaultCompanyNamesFile = "configs/company_names.txt"
+)
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
@@ -104,7 +108,7 @@ func run(ctx context.Context, args []string) error {
 
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "run", "migrate-up", "migrate-down", "migrate-force", "discover":
+	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover":
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q: %s", cmd, usage)
@@ -142,6 +146,8 @@ func run(ctx context.Context, args []string) error {
 		return runApp(ctx, cfg, logger)
 	case "discover":
 		return runDiscover(ctx, cfg, logger, rest)
+	case "search-discover":
+		return runSearchDiscover(ctx, cfg, logger, rest)
 	}
 	return nil // unreachable: cmd was validated above
 }
@@ -226,12 +232,56 @@ func runMigrateForce(cfg *config.Config, logger *slog.Logger, args []string) err
 	return nil
 }
 
+// newHTTPClient builds the one pooled HTTP client a command run uses —
+// shared across discovery's own HEAD/GET probing and (for
+// search-discover) the Google Custom Search calls that produce
+// candidates for it, rather than each constructing its own. CLAUDE.md's
+// rule: reuse configured clients, don't create one per caller.
+func newHTTPClient(cfg *config.Config) *httpclient.Client {
+	httpCfg := httpclient.DefaultConfig()
+	httpCfg.Timeout = cfg.HTTP.Timeout
+	httpCfg.MaxResponseBytes = cfg.HTTP.MaxResponseBytes
+	httpCfg.UserAgent = cfg.HTTP.UserAgent
+	return httpclient.New(httpCfg)
+}
+
+func newDiscoverer(cfg *config.Config, db *database.DB, httpClient *httpclient.Client, logger *slog.Logger) *discovery.Discoverer {
+	return discovery.New(
+		company.NewStore(db.Pool),
+		company.NewTargetStore(db.Pool),
+		httpClient,
+		cfg.Discovery.Workers,
+		logger,
+	)
+}
+
+// reportDiscoveryResults logs a per-candidate outcome and a summary, and
+// decides the command's exit status: non-zero only when every candidate
+// failed. A mix of successes and failures is discovery's normal steady
+// state (a board can go away, or search can miss one company) and must
+// not fail a cron-style invocation of either discover or
+// search-discover.
+func reportDiscoveryResults(logger *slog.Logger, results []discovery.Result) error {
+	var succeeded, failed int
+	for _, r := range results {
+		if r.Err != nil {
+			failed++
+			logger.Warn("candidate not discovered", "company", r.Candidate.CompanyName, "board_url", r.Candidate.BoardURL, "error", r.Err)
+			continue
+		}
+		succeeded++
+	}
+	logger.Info("discovery run complete", "total", len(results), "succeeded", succeeded, "failed", failed)
+
+	if succeeded == 0 {
+		return fmt.Errorf("all %d candidate(s) failed", len(results))
+	}
+	return nil
+}
+
 // runDiscover loads candidates from a seed file (configs/seed_companies.json
 // by default) and runs discovery against them, persisting the companies
-// and target boards that validate. It exits non-zero only if every
-// candidate failed — a mix of successes and failures is discovery's
-// normal steady state (a board can go away at any time) and must not
-// fail a cron-style invocation of this command.
+// and target boards that validate.
 func runDiscover(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
 	if len(args) > 1 {
 		err := errors.New("discover: usage: discover [seed-file]")
@@ -261,36 +311,69 @@ func runDiscover(ctx context.Context, cfg *config.Config, logger *slog.Logger, a
 	}
 	defer db.Close()
 
-	httpCfg := httpclient.DefaultConfig()
-	httpCfg.Timeout = cfg.HTTP.Timeout
-	httpCfg.MaxResponseBytes = cfg.HTTP.MaxResponseBytes
-	httpCfg.UserAgent = cfg.HTTP.UserAgent
-
-	d := discovery.New(
-		company.NewStore(db.Pool),
-		company.NewTargetStore(db.Pool),
-		httpclient.New(httpCfg),
-		cfg.Discovery.Workers,
-		logger,
-	)
-
+	d := newDiscoverer(cfg, db, newHTTPClient(cfg), logger)
 	results := d.Run(ctx, candidates)
+	return reportDiscoveryResults(logger, results)
+}
 
-	var succeeded, failed int
-	for _, r := range results {
-		if r.Err != nil {
-			failed++
-			logger.Warn("candidate not discovered", "company", r.Candidate.CompanyName, "board_url", r.Candidate.BoardURL, "error", r.Err)
-			continue
-		}
-		succeeded++
+// runSearchDiscover reads a plain-text list of company names (default
+// configs/company_names.txt), finds each one's ATS board via the Google
+// Custom Search API, and runs the same discovery pipeline runDiscover
+// does — HEAD/GET validation, then persistence — against the resulting
+// candidates. This is the "real search instead of hand-curated seed
+// data" mechanism: a company name is enough, search finds the board.
+func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
+	if len(args) > 1 {
+		err := errors.New("search-discover: usage: search-discover [company-names-file]")
+		logger.Error(err.Error())
+		return err
 	}
-	logger.Info("discovery run complete", "total", len(results), "succeeded", succeeded, "failed", failed)
+	if !cfg.Search.Configured() {
+		err := errors.New("search-discover requires GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID to be set")
+		logger.Error(err.Error())
+		return err
+	}
+	logger.Info("starting search-discover", "search", cfg.Search)
 
-	if succeeded == 0 {
-		return fmt.Errorf("discover: all %d candidate(s) failed", len(results))
+	namesPath := defaultCompanyNamesFile
+	if len(args) == 1 {
+		namesPath = args[0]
 	}
-	return nil
+
+	names, err := discovery.LoadCompanyNames(namesPath)
+	if err != nil {
+		logger.Error("loading company names failed", "error", err)
+		return err
+	}
+	logger.Info("loaded company names", "count", len(names), "names_file", namesPath)
+
+	httpClient := newHTTPClient(cfg)
+	searchClient := search.New(httpClient, search.Config{
+		APIKey:         cfg.Search.GoogleAPIKey,
+		SearchEngineID: cfg.Search.GoogleSearchEngineID,
+	})
+
+	candidates, searchErrs := discovery.CandidatesFromSearch(ctx, searchClient, names)
+	for _, searchErr := range searchErrs {
+		logger.Warn("company search failed", "error", searchErr)
+	}
+	logger.Info("search complete",
+		"companies_searched", len(names), "candidates_found", len(candidates), "search_failures", len(searchErrs))
+
+	if len(candidates) == 0 {
+		return fmt.Errorf("search-discover: no ATS board found for any of %d company name(s)", len(names))
+	}
+
+	db, err := database.New(ctx, cfg.Database)
+	if err != nil {
+		logger.Error("connecting to database failed", "error", err)
+		return fmt.Errorf("connecting to database: %w", err)
+	}
+	defer db.Close()
+
+	d := newDiscoverer(cfg, db, httpClient, logger)
+	results := d.Run(ctx, candidates)
+	return reportDiscoveryResults(logger, results)
 }
 
 // runApp starts the long-running process: connect to the database, then
