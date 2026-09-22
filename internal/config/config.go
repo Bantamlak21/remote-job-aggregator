@@ -140,17 +140,16 @@ type DiscoveryConfig struct {
 	Workers int
 }
 
-// SearchConfig configures the Google Custom Search JSON API client used
-// by the search-based discovery mechanism. Both fields are optional —
-// unlike DATABASE_URL, most commands (run, migrate-*, the seed-file
-// discover) never need them, so Load does not require them — but they
-// are only ever meaningful together: an API key with no search engine
-// ID (or vice versa) can't make a real request, so Load rejects that
-// combination rather than deferring the failure to the first search
-// call.
+// SearchConfig configures the Serper (google.serper.dev) search API
+// client used by the search-based discovery mechanism. Optional — unlike
+// DATABASE_URL, most commands (run, migrate-*, the seed-file discover)
+// never need it, so Load does not require it. Unlike the Google Custom
+// Search API this replaced, Serper needs only one credential: it wraps
+// regular Google search directly rather than a separately provisioned
+// "custom search engine," so there is no second id to configure or
+// validate as a pair.
 type SearchConfig struct {
-	GoogleAPIKey         string
-	GoogleSearchEngineID string
+	SerperAPIKey string
 }
 
 // LogValue redacts the API key so a SearchConfig can be logged directly
@@ -158,20 +157,17 @@ type SearchConfig struct {
 // LogValue, applied before this struct has ever actually been logged
 // anywhere, since that mistake is cheaper to prevent than to catch.
 func (s SearchConfig) LogValue() slog.Value {
-	key := s.GoogleAPIKey
+	key := s.SerperAPIKey
 	if key != "" {
 		key = "REDACTED"
 	}
-	return slog.GroupValue(
-		slog.String("google_api_key", key),
-		slog.String("google_search_engine_id", s.GoogleSearchEngineID),
-	)
+	return slog.GroupValue(slog.String("serper_api_key", key))
 }
 
-// Configured reports whether both search credentials are present, i.e.
+// Configured reports whether the search credential is present, i.e.
 // whether search-based discovery can actually run.
 func (s SearchConfig) Configured() bool {
-	return s.GoogleAPIKey != "" && s.GoogleSearchEngineID != ""
+	return s.SerperAPIKey != ""
 }
 
 // Config is the fully validated, typed configuration for the aggregator
@@ -292,11 +288,7 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("DISCOVERY_WORKERS must be between 1 and 100, got %d", discoveryWorkersRaw))
 	}
 
-	googleAPIKey := getEnv("GOOGLE_SEARCH_API_KEY", "")
-	googleSearchEngineID := getEnv("GOOGLE_SEARCH_ENGINE_ID", "")
-	if (googleAPIKey == "") != (googleSearchEngineID == "") {
-		errs = append(errs, errors.New("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID must both be set, or neither"))
-	}
+	serperAPIKey := getEnv("SERPER_API_KEY", "")
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config: %w", errors.Join(errs...))
@@ -329,8 +321,7 @@ func Load() (*Config, error) {
 			Workers: discoveryWorkersRaw,
 		},
 		Search: SearchConfig{
-			GoogleAPIKey:         googleAPIKey,
-			GoogleSearchEngineID: googleSearchEngineID,
+			SerperAPIKey: serperAPIKey,
 		},
 	}, nil
 }

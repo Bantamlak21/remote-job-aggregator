@@ -13,7 +13,7 @@ import (
 
 // fakeSearchClient lets CandidatesFromSearch's own logic (result
 // parsing, error collection, per-company independence) be tested without
-// a real Google API key.
+// a real Serper API key.
 type fakeSearchClient struct {
 	mu       sync.Mutex
 	queries  []string

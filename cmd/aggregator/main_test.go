@@ -165,14 +165,13 @@ func TestRunSearchDiscover_RejectsTooManyArgs(t *testing.T) {
 func TestRunSearchDiscover_RequiresSearchCredentials(t *testing.T) {
 	clearRequiredEnv(t)
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
-	t.Setenv("GOOGLE_SEARCH_API_KEY", "")
-	t.Setenv("GOOGLE_SEARCH_ENGINE_ID", "")
+	t.Setenv("SERPER_API_KEY", "")
 
 	err := run(context.Background(), []string{"search-discover"})
 	if err == nil {
 		t.Fatal("search-discover without search credentials = nil, want an error")
 	}
-	if !strings.Contains(err.Error(), "GOOGLE_SEARCH_API_KEY") {
+	if !strings.Contains(err.Error(), "SERPER_API_KEY") {
 		t.Errorf("error = %q, want it to mention the missing credentials", err.Error())
 	}
 }
@@ -182,8 +181,7 @@ func TestRunSearchDiscover_MissingNamesFileFailsBeforeTouchingTheDatabase(t *tes
 	// A bad DATABASE_URL that would fail to connect if this ever got that
 	// far — it must not, since the names file load happens first.
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:1/does-not-exist")
-	t.Setenv("GOOGLE_SEARCH_API_KEY", "test-key")
-	t.Setenv("GOOGLE_SEARCH_ENGINE_ID", "test-cx")
+	t.Setenv("SERPER_API_KEY", "test-key")
 
 	err := run(context.Background(), []string{"search-discover", "/nonexistent/names.txt"})
 	if err == nil {

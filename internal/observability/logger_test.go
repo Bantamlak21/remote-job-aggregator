@@ -100,32 +100,25 @@ func TestNewLogger_RedactsDatabaseConfigCredentials(t *testing.T) {
 	}
 }
 
-// Regression test: SearchConfig must never leak GOOGLE_SEARCH_API_KEY
-// through a real slog.Handler, mirroring
-// TestNewLogger_RedactsDatabaseConfigCredentials above — a config test
-// that only calls LogValue().String() in isolation would miss a
-// regression where slog's own attribute-resolution stopped calling
-// LogValue at all (e.g. a field passed as a raw struct rather than
-// through slog.Any, or a handler that doesn't call Resolve).
+// Regression test: SearchConfig must never leak SERPER_API_KEY through a
+// real slog.Handler, mirroring TestNewLogger_RedactsDatabaseConfigCredentials
+// above — a config test that only calls LogValue().String() in isolation
+// would miss a regression where slog's own attribute-resolution stopped
+// calling LogValue at all (e.g. a field passed as a raw struct rather
+// than through slog.Any, or a handler that doesn't call Resolve).
 func TestNewLogger_RedactsSearchConfigCredentials(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(config.LogConfig{Level: slog.LevelInfo, Format: config.LogFormatJSON}, &buf)
 
-	searchCfg := config.SearchConfig{
-		GoogleAPIKey:         "AIzaSyTOPSECRETKEY123456789",
-		GoogleSearchEngineID: "test-engine-id",
-	}
+	searchCfg := config.SearchConfig{SerperAPIKey: "SUPERSECRETSERPERKEY123456789"}
 	logger.Info("starting search-discover", "search", searchCfg)
 
 	out := buf.String()
-	if strings.Contains(out, "AIzaSyTOPSECRETKEY123456789") {
+	if strings.Contains(out, "SUPERSECRETSERPERKEY123456789") {
 		t.Errorf("logger output leaked the search API key: %s", out)
 	}
 	if !strings.Contains(out, "REDACTED") {
 		t.Errorf("logger output = %q, want it to contain REDACTED", out)
-	}
-	if !strings.Contains(out, "test-engine-id") {
-		t.Errorf("logger output = %q, want the non-secret engine ID to still be visible", out)
 	}
 }
 

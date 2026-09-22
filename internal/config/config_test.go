@@ -16,7 +16,7 @@ func clearAll(t *testing.T) {
 		"APP_ENV", "DATABASE_URL", "DB_MAX_OPEN_CONNS", "DB_MIN_CONNS",
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
-		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "GOOGLE_SEARCH_API_KEY", "GOOGLE_SEARCH_ENGINE_ID",
+		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY",
 	} {
 		t.Setenv(key, "")
 	}
@@ -446,51 +446,32 @@ func TestLoad_SearchConfigDefaultsToUnconfigured(t *testing.T) {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 	if cfg.Search.Configured() {
-		t.Error("Search.Configured() = true, want false when neither env var is set")
+		t.Error("Search.Configured() = true, want false when SERPER_API_KEY is not set")
 	}
-	if cfg.Search.GoogleAPIKey != "" || cfg.Search.GoogleSearchEngineID != "" {
-		t.Errorf("Search = %+v, want both fields empty by default", cfg.Search)
+	if cfg.Search.SerperAPIKey != "" {
+		t.Errorf("Search.SerperAPIKey = %q, want empty by default", cfg.Search.SerperAPIKey)
 	}
 }
 
-func TestLoad_SearchConfigOverridesRespected(t *testing.T) {
+func TestLoad_SearchConfigOverrideRespected(t *testing.T) {
 	clearAll(t)
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
-	t.Setenv("GOOGLE_SEARCH_API_KEY", "test-api-key")
-	t.Setenv("GOOGLE_SEARCH_ENGINE_ID", "test-cx")
+	t.Setenv("SERPER_API_KEY", "test-api-key")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 	if !cfg.Search.Configured() {
-		t.Error("Search.Configured() = false, want true when both env vars are set")
+		t.Error("Search.Configured() = false, want true when SERPER_API_KEY is set")
 	}
-	if cfg.Search.GoogleAPIKey != "test-api-key" || cfg.Search.GoogleSearchEngineID != "test-cx" {
-		t.Errorf("Search = %+v, unexpected values", cfg.Search)
-	}
-}
-
-func TestLoad_SearchConfigRejectsOnlyOneVarSet(t *testing.T) {
-	for _, setKey := range []string{"GOOGLE_SEARCH_API_KEY", "GOOGLE_SEARCH_ENGINE_ID"} {
-		t.Run(setKey, func(t *testing.T) {
-			clearAll(t)
-			t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
-			t.Setenv(setKey, "only-one-set")
-
-			_, err := Load()
-			if err == nil {
-				t.Fatalf("expected an error when only %s is set, got nil", setKey)
-			}
-			if !strings.Contains(err.Error(), "must both be set, or neither") {
-				t.Errorf("error = %q, want it to explain both vars are required together", err.Error())
-			}
-		})
+	if cfg.Search.SerperAPIKey != "test-api-key" {
+		t.Errorf("Search.SerperAPIKey = %q, want %q", cfg.Search.SerperAPIKey, "test-api-key")
 	}
 }
 
 func TestSearchConfig_LogValueRedactsAPIKey(t *testing.T) {
-	s := SearchConfig{GoogleAPIKey: "super-secret-key", GoogleSearchEngineID: "public-cx-id"}
+	s := SearchConfig{SerperAPIKey: "super-secret-key"}
 
 	got := s.LogValue().String()
 	if strings.Contains(got, "super-secret-key") {
@@ -499,7 +480,13 @@ func TestSearchConfig_LogValueRedactsAPIKey(t *testing.T) {
 	if !strings.Contains(got, "REDACTED") {
 		t.Errorf("LogValue() = %q, want it to contain REDACTED", got)
 	}
-	if !strings.Contains(got, "public-cx-id") {
-		t.Errorf("LogValue() = %q, want it to preserve the non-secret search engine ID", got)
+}
+
+func TestSearchConfig_LogValueOnUnconfiguredDoesNotClaimRedaction(t *testing.T) {
+	s := SearchConfig{}
+
+	got := s.LogValue().String()
+	if strings.Contains(got, "REDACTED") {
+		t.Errorf("LogValue() = %q, want no REDACTED marker when there is no key to redact", got)
 	}
 }

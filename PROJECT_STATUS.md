@@ -250,35 +250,59 @@ addressed (a test name that only checked a lower bound, a missing explicit
 
 ### Search-based discovery (extends Phase 2, this session)
 
-**Status: complete, reviewed (two rounds of independent adversarial critic review, round 2
-ACCEPT), being committed/pushed with a PR opening as of this document.** No schema
-migration; one query-level behavior change to an existing table (see below).
+**Status: complete, reviewed (two rounds of independent adversarial critic review against
+the original Google Custom Search implementation, round 2 ACCEPT; the search *provider* was
+then swapped to Serper — see below — with its own fresh review pass), being
+committed/pushed with a PR opening as of this document.** No schema migration; one
+query-level behavior change to an existing table (see below).
 
 **Why this exists:** the user explicitly redirected discovery away from hand-curated seed
 data — "Instead of seeding companies, or faking it, it's better to work with a real search."
-— toward a real web search API. Resolved to the Google Custom Search JSON API (the only
-option that is both genuinely free and requires no credit card, per the user's own
-constraint: "Any API as long as it is free and real").
+— toward a real web search API. First built against the Google Custom Search JSON API (the
+option that was, at the time, both genuinely free and required no credit card, per the
+user's own constraint: "Any API as long as it is free and real"), then swapped to Serper
+(google.serper.dev) after the user reported the Google API had become unviable for this use
+and that Brave's API — the other candidate — requires a credit card even for its free tier.
+Serper's free tier (2,500 queries, confirmed against serper.dev's own landing page — "No
+credit card required") satisfies the same constraint and is simpler to configure: it wraps
+ordinary Google search directly, needing only one credential rather than an API key plus a
+separately provisioned "Programmable Search Engine" id.
 
-**`internal/search`** (new package) — wraps the Google Custom Search JSON API.
-- `Client.Search(ctx, query) ([]Result, error)`. Config is `APIKey` + `SearchEngineID`.
-- The API key travels as the `X-goog-api-key` HTTP header, never as a URL query parameter —
-  found during round-1 adversarial review that a query-string key leaks through Go's own
-  `*url.Error` on network failures/timeouts (the full request URL, query string included, is
-  embedded in that error's string before any `%w` wrapping ever sees it — no downstream
-  redaction can close this once the key is in the URL). Verified against Google's own Cloud
-  documentation, which recommends the header form for exactly this reason.
-- Quota-exceeded detection (`ErrQuotaExceeded`) recognizes both the newer
-  `status: "RESOURCE_EXHAUSTED"` shape and the classic `errors[].reason` shape
-  (`dailyLimitExceeded`, etc.) — the classic shape was a gap found in round-1 review.
-- Tests: `internal/search/google_test.go` (10 tests) — result parsing, required query
-  params, the header-not-URL key placement, a real network-error probe against a
-  nothing-listens-here address confirming the key never appears in the resulting error
-  string, both quota-exceeded shapes, non-JSON error bodies, context cancellation.
-- **Not yet verified against the real googleapis.com endpoint** — no
-  `GOOGLE_SEARCH_API_KEY`/`GOOGLE_SEARCH_ENGINE_ID` exists in this environment. All
-  verification so far is against fake `httptest` servers. This is a named, outstanding gap —
-  see Section 8.
+**⚠ Security incident during this swap, now resolved:** the user's own first draft of a
+Serper client (pasted directly, not committed) had a live Serper API key hardcoded in
+plaintext. That key was flagged as compromised the moment it was seen and the user was told
+to rotate it at serper.dev immediately, independent of any code fix — rotating exposed
+credentials is not something a code change can undo. The real implementation below sources
+the key from `SearchConfig`/the environment only; grepped to confirm the literal key string
+appears nowhere in this repository.
+
+**`internal/search`** (rewritten this session) — wraps the Serper search API.
+- `Client.Search(ctx, query) ([]Result, error)`. Config is just `APIKey` — Serper needs no
+  second id, unlike Google Custom Search.
+- POST with a JSON body (`{"q": ..., "num": 10}`), not a URL query string — the query itself
+  never touches the URL, so the credential-in-URL leak class the original Google client had
+  to fix (a query-string key leaking through Go's own unredacted `*url.Error` on a network
+  failure) cannot occur here structurally, independent of the header-vs-query-string choice.
+  The key still travels as the `X-API-KEY` header regardless, matching Serper's own
+  documented mechanism.
+- Response parsing (`organic[].{title,link,snippet}`) and the error shape
+  (`{"message","statusCode"}`) are verified against Serper's own landing page plus two
+  independent real-world error reports (a 400 "Missing query parameter", a 403
+  "Unauthorized.") found via web research — not guessed. Serper does not appear to expose any
+  way to distinguish "bad API key" from "out of free-tier credits" (both produce the same
+  generic 403), so unlike the Google client's `ErrQuotaExceeded` (which could recognize a
+  specific quota reason code), this client's `ErrUnauthorized` honestly covers both cases
+  without claiming to tell them apart.
+- Tests: `internal/search/serper_test.go` (11 tests) — result parsing, no-results, the
+  documented request shape (POST, JSON body, `q`/`num` fields), the header-not-URL/body key
+  placement, a real network-error probe against a nothing-listens-here address confirming the
+  key never appears in the resulting error string, the documented 400 and 401/403 error
+  shapes, unparseable success and error bodies, context cancellation.
+- **Not yet verified against the real google.serper.dev endpoint** — no `SERPER_API_KEY`
+  exists in this environment. All verification so far is against fake `httptest` servers,
+  and the response/error shapes above are verified against documentation and real-world
+  reports, not a live call this session made itself. This is a named, outstanding gap — see
+  Section 8.
 
 **`internal/discovery/search.go`** (new file) — turns company names into `Candidate`s by
 searching and recognizing a known ATS board URL (Greenhouse, Lever, Ashby) in the results,
@@ -300,10 +324,10 @@ rule (this is a same-input-same-output extraction problem).
   round-1's first BLOCKER: without it, two different companies whose search results both
   surfaced an embed URL would collide on the same fake "embed" slug and corrupt each other's
   `target_companies` row.
-- `CandidatesFromSearch` runs searches sequentially, not concurrently — Google's free tier is
-  a 100-queries/day budget, not a throughput problem worth a worker pool over. One company's
-  search failure never stops the batch; every name is attempted and every per-name error
-  collected.
+- `CandidatesFromSearch` runs searches sequentially, not concurrently — Serper's free tier is
+  a fixed pool of query credits, not a throughput problem worth a worker pool over. One
+  company's search failure never stops the batch; every name is attempted and every per-name
+  error collected.
 - Tests: `internal/discovery/search_test.go` — provider recognition (all three ATS hosts),
   the embed-URL rejection (plus proof a real board is still found when an embed URL is also
   present in the same result set), case-insensitive host matching, the boundary-anchor
@@ -330,13 +354,14 @@ message. Tests (against real Postgres): the reassignment attempt is rejected and
 original row's `company_id`/`board_url` are provably unchanged; a legitimate same-company
 re-upsert still succeeds; the new lookup method's found/not-found paths.
 
-**`internal/config`** — added `SearchConfig` (`GoogleAPIKey`, `GoogleSearchEngineID`,
-`Configured()`, redacting `LogValue()`). `Load()` requires both env vars set together or
-neither (`GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID`). Round-1 review flagged that the
-config-level redaction test only called `.LogValue().String()` directly, never proving
-redaction survives real `slog` attribute resolution — fixed with
-`TestNewLogger_RedactsSearchConfigCredentials` in `internal/observability/logger_test.go`
-(mirrors the existing `DatabaseConfig` version), and `cfg.Search` is now actually logged in
+**`internal/config`** — `SearchConfig` (`SerperAPIKey`, `Configured()`, redacting
+`LogValue()`), read from the single `SERPER_API_KEY` env var — simpler than the
+originally-built Google version, which needed two env vars validated as a pair. Round-1
+review (against the Google version) flagged that the config-level redaction test only called
+`.LogValue().String()` directly, never proving redaction survives real `slog` attribute
+resolution — fixed with `TestNewLogger_RedactsSearchConfigCredentials` in
+`internal/observability/logger_test.go` (mirrors the existing `DatabaseConfig` version, now
+updated for the single-field `SearchConfig`), and `cfg.Search` is still logged in
 `runSearchDiscover` so `LogValue()` is exercised in real code, not just tests.
 
 **CLI — `aggregator search-discover [company-names-file]`** — loads company names, searches
@@ -350,7 +375,7 @@ be loaded or no board is found for any of them. Tests:
 
 **`configs/company_names.txt`** (new) — two example names (Spotify, Airbnb), explicitly
 documented in the file's own header comment as **unverified against the real search API**
-(unlike `configs/seed_companies.json`'s live-verified examples) — no Google API credentials
+(unlike `configs/seed_companies.json`'s live-verified examples) — no Serper API credentials
 exist in this environment to run them for real.
 
 **Review process.** Two rounds of independent adversarial critic review, following
@@ -363,7 +388,20 @@ prefix/suffix host-injection attempts — found none), tracing the actual leak p
 `internal/httpclient`'s retry-exhausted error to confirm the original vulnerability was real
 and that moving the key out of the URL (not just redacting `req.URL`) is what actually closes
 it, and running the full test suite including `internal/company`'s DB-guard test against a
-real Postgres instance.
+real Postgres instance. Those two rounds reviewed the Google-backed implementation.
+
+**The provider swap to Serper (this session) had its own independent cold critic pass:
+ACCEPT, no blockers.** The critic read every changed file, walked every documented Serper
+response/error shape (success, no-results, 400, 401/403, 500 with a non-JSON body,
+malformed JSON on a 200) against `serper.go`'s actual handling and found none mishandled;
+confirmed the API key never touches a URL or an unredacted log line and is exercised through
+a real `slog.Handler`, not just a direct method call; grepped the whole repo (including git
+history) for any leftover Google-specific assumption (`ErrQuotaExceeded`, `GoogleAPIKey`,
+`SearchEngineID`, `GOOGLE_SEARCH`) or a live-looking key literal and found none; independently
+ran the full build/vet/fmt/test suite, including the DB-backed packages against real
+Postgres, and cross-checked every per-package test count against Section 7's table — all
+matched exactly; and confirmed README.md/`.env.example`/this document accurately describe
+Serper (not stale Google claims) and do not overclaim verification that didn't happen.
 
 ## 3. Work In Progress
 
@@ -507,7 +545,7 @@ cmd/aggregator (composition root)
     │       │
     │       └─ migrations/      (embedded SQL, go:embed)
     ├─ internal/httpclient      (pooled, retrying HTTP client)
-    ├─ internal/search          (Google Custom Search JSON API client)
+    ├─ internal/search          (Serper search API client)
     ├─ internal/company         (Store/TargetStore over companies/target_companies)
     ├─ internal/discovery       (seed OR search → candidates → probe → persist)
     └─ configs/                 (seed_companies.json, company_names.txt)
@@ -516,13 +554,13 @@ cmd/aggregator (composition root)
 One deployable binary. `cmd/aggregator/main.go` is the only place that wires concrete
 implementations together. Nothing outside `internal/database` touches `pgxpool` directly;
 nothing outside `internal/config` reads `os.Getenv`; nothing outside `internal/search` talks
-to the Google Custom Search API. `internal/discovery` depends on `internal/company`,
+to the Serper API. `internal/discovery` depends on `internal/company`,
 `internal/httpclient`, and (for the search path) `internal/search` through small interfaces
 it defines itself (`CompanyUpserter`, `TargetUpserter`, `SearchClient`) rather than their
 concrete types — the consumer-defines-the-interface Go convention, chosen so discovery's own
 orchestration logic (HEAD/GET fallback, concurrency bound, error propagation, board-URL
 recognition) is unit-testable with fakes instead of always needing a database or a live
-Google API key. Two independent ways to produce a `Candidate` (`LoadSeedCandidates` from a
+Serper API key. Two independent ways to produce a `Candidate` (`LoadSeedCandidates` from a
 JSON file, `CandidatesFromSearch` from a search) converge on the same `Discoverer.Run`
 pipeline — "how a candidate was found" is fully decoupled from "what happens once we have
 one."
@@ -597,7 +635,7 @@ independent of the checked-in test suite, to verify the `MaxRedirects` off-by-on
 
 **Missing tests:** none within Phase 1, Phase 2, or the search-discovery extension's own
 scope — every behavior change in this session shipped with a regression test, per CLAUDE.md.
-`internal/search/google.go` has not been tested against the real, live Google API (see
+`internal/search/serper.go` has not been tested against the real, live Serper API (see
 Section 8) — only against fake `httptest` servers; that gap is documented as such, not
 papered over with an unverified claim. Coverage will grow with each future phase (fake ATS
 servers for Phase 3, an eval suite for Phase 4's classifier, etc.) — none of that exists yet
@@ -636,20 +674,23 @@ because none of that code exists yet.
   the shipped example will start failing `discover` (gracefully — it logs and skips, doesn't
   crash) even though nothing in this repo is wrong. Worth a periodic manual re-check, not
   worth building automation around yet.
-- **`internal/search` has never been run against the real Google Custom Search API.** No
-  `GOOGLE_SEARCH_API_KEY`/`GOOGLE_SEARCH_ENGINE_ID` exists in this environment — these must
-  come from Bantamlak (Google Cloud Console → enable Custom Search API → API key;
-  Programmable Search Engine console → new engine → "Search the entire web" → the `cx` id;
-  both free, no card required — see `.env.example` and README.md's Discovery section for the
-  exact steps). Everything in this session was verified against fake `httptest` servers,
-  honestly documented as such. **Next session with real credentials should run
-  `search-discover` end to end** (e.g. against `configs/company_names.txt`'s two example
-  names) and confirm: the header-based auth is actually accepted by the real endpoint, the
-  response shape matches `apiResponse`'s assumptions, and — if it can be provoked without
-  burning the whole daily quota — that the classic `dailyLimitExceeded` error shape
-  (`quotaExceeded` in `internal/search/google.go`) is what Custom Search specifically
-  returns, which round-2 review confirmed is documented for the API family but not yet
-  observed from Custom Search itself.
+- **`internal/search` has never been run against the real google.serper.dev endpoint.** No
+  `SERPER_API_KEY` exists in this environment — get one from Bantamlak (sign up at
+  https://serper.dev/, no card required, 2,500 free queries; copy the key from
+  https://serper.dev/api-keys — see `.env.example` and README.md's Discovery section).
+  Everything in this session was verified against fake `httptest` servers; the request/
+  response/error shapes `serper.go` assumes are backed by Serper's own landing page plus two
+  independent real-world error reports found via research, not a live call this session made
+  itself. **Next session with real credentials should run `search-discover` end to end**
+  (e.g. against `configs/company_names.txt`'s two example names) and confirm: the header-based
+  auth is actually accepted by the real endpoint, the `organic[].{title,link,snippet}`
+  response shape matches `apiResponse`'s assumptions, and the `{"message","statusCode"}` error
+  shape is what a real bad-key or malformed-query request actually returns.
+- **A hardcoded, live Serper API key was found in a draft file during this session and
+  flagged for immediate rotation** (not committed to git, and confirmed absent from this
+  repository by direct grep before this document was written) — mentioned here so the
+  rotation isn't forgotten if it hasn't happened yet. See Section 2's "Search-based discovery"
+  subsection.
 - **`configs/company_names.txt`'s two example names (Spotify, Airbnb) are unverified against
   the real search API**, unlike `configs/seed_companies.json`'s live-verified examples — see
   above. The file's own header comment says so.
@@ -658,11 +699,10 @@ because none of that code exists yet.
 
 **Two independent next steps — neither blocks the other:**
 
-1. **External, needs Bantamlak:** obtain real `GOOGLE_SEARCH_API_KEY`/
-   `GOOGLE_SEARCH_ENGINE_ID` and run `search-discover` end to end against the real Google
-   API — see Section 8's `internal/search` known-issue entry for exactly what that
-   verification should check. This does not block Phase 3 and can happen whenever
-   credentials become available.
+1. **External, needs Bantamlak:** obtain a real `SERPER_API_KEY` (free, no card — see
+   Section 8) and run `search-discover` end to end against the real Serper API — see
+   Section 8's `internal/search` known-issue entry for exactly what that verification should
+   check. This does not block Phase 3 and can happen whenever a key becomes available.
 2. **Development, no external dependency: start Phase 3** — build the `internal/ats`
    package with a Greenhouse client, and `internal/job` for the normalized job type.
 
@@ -696,9 +736,9 @@ a real employer's board.
    discovery PR (opened by the same session that wrote this update, branch
    `Bantamlak21/phase3-search-discovery-e451cddd`) has since been merged — if it has, this
    document's Section 3 "being committed/pushed" language is stale; update it rather than
-   trusting it. Also check whether real `GOOGLE_SEARCH_API_KEY`/`GOOGLE_SEARCH_ENGINE_ID`
-   have been provided since — if so, Section 8's `internal/search` known-issue entry needs
-   the live-verification follow-up actually performed, not just planned.
+   trusting it. Also check whether a real `SERPER_API_KEY` has been provided since — if so,
+   Section 8's `internal/search` known-issue entry needs the live-verification follow-up
+   actually performed, not just planned.
 4. Run the verification commands in [Section 7](#7-testing-and-verification-status) to
    confirm the state this document describes still matches reality — this document is a
    snapshot, not a live source of truth. If something doesn't match, trust the repository

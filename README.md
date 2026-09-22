@@ -47,9 +47,9 @@ aggregator migrate-force <version>    # clear a "dirty" schema_migrations state
 aggregator discover [seed-file]       # validate candidate ATS boards from a seed file
                                        # (default configs/seed_companies.json) and persist
                                        # the ones that respond
-aggregator search-discover [names-file]  # find each company's ATS board via Google Custom
-                                       # Search (default configs/company_names.txt), then
-                                       # the same validate-and-persist as discover
+aggregator search-discover [names-file]  # find each company's ATS board via the Serper
+                                       # search API (default configs/company_names.txt),
+                                       # then the same validate-and-persist as discover
 ```
 
 `migrate-down` always requires `--yes`: rolling back even one migration is
@@ -105,8 +105,7 @@ raw credential even when the value itself was the problem.
 | `HTTP_MAX_RESPONSE_SIZE` | no | `5242880` (5 MiB) | bytes; independent of `HTTP_TIMEOUT` — this bounds size, not time; must be positive |
 | `HTTP_USER_AGENT` | no | `remote-job-aggregator/1.0 (+https://github.com/Bantamlak12/remote-job-aggregator)` | sent on every outbound request; must not be blank |
 | `DISCOVERY_WORKERS` | no | `5` | bounded concurrency for discovery's HTTP probes; 1 – 100 |
-| `GOOGLE_SEARCH_API_KEY` | no | — | only for `search-discover`; must be set together with `GOOGLE_SEARCH_ENGINE_ID`, or neither |
-| `GOOGLE_SEARCH_ENGINE_ID` | no | — | only for `search-discover`; the Programmable Search Engine's "cx" id |
+| `SERPER_API_KEY` | no | — | only for `search-discover`; from https://serper.dev/api-keys |
 | `TEST_DATABASE_URL` | no | — | integration tests only; database name must end in `_test` |
 
 Config values passed via `DATABASE_URL`'s own query string (e.g.
@@ -226,11 +225,11 @@ aggregator search-discover                          # uses configs/company_names
 aggregator search-discover path/to/custom_names.txt
 ```
 
-Requires `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_ENGINE_ID` (see
-`.env.example` for the free, no-card-required setup steps). Given just a
-plain-text list of company names — one per line, `#` for comments — this
-finds each company's ATS board via the Google Custom Search JSON API
-instead of requiring a human to look up and type the full
+Requires `SERPER_API_KEY` (see `.env.example` for the free,
+no-card-required setup steps — https://serper.dev/, 2,500 free queries).
+Given just a plain-text list of company names — one per line, `#` for
+comments — this finds each company's ATS board via the Serper search
+API instead of requiring a human to look up and type the full
 `board_url`/`ats_provider`/`external_board_id` record `discover`'s seed
 file needs. For each name it searches
 `"<name>" (site:boards.greenhouse.io OR site:job-boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com)`,
@@ -240,13 +239,13 @@ and extracts the provider + board slug from it (`internal/discovery/search.go`'s
 not an LLM parsing search results, since that's a solved lookup problem
 that doesn't need one. The resulting candidates go through the exact
 same `Discoverer.Run` pipeline `discover` uses: HEAD/GET validation,
-then persistence. A company search can fail (quota exhausted, no known
-board found in the results) without stopping the rest — same
+then persistence. A company search can fail (credits exhausted, no
+known board found in the results) without stopping the rest — same
 partial-success-exits-0 policy as `discover`.
 
-Searches run sequentially, not concurrently: Google's free tier is a
-100-queries-a-day budget, not a throughput problem worth a worker pool
-over. `configs/company_names.txt` ships with two names
+Searches run sequentially, not concurrently: Serper's free tier is a
+fixed pool of query credits, not a throughput problem worth a worker
+pool over. `configs/company_names.txt` ships with two names
 (`internal/company`'s Phase 2 examples) that are not yet verified through
 this specific command — that needs a real API key this environment
 doesn't have; verify them yourself once you've set credentials up.
@@ -289,9 +288,9 @@ Modular monolith, one deployable binary. Package boundaries so far:
 - `internal/company` — domain types and the only code that writes to
   `companies`/`target_companies`. `Store`/`TargetStore.Upsert` are each a
   single atomic `INSERT ... ON CONFLICT`, never a check-then-insert.
-- `internal/search` — wraps the Google Custom Search JSON API. Knows
-  nothing about ATS providers either; returns raw `(title, URL, snippet)`
-  results for a query string, same as any other search API client.
+- `internal/search` — wraps the Serper search API. Knows nothing about
+  ATS providers either; returns raw `(title, URL, snippet)` results for
+  a query string, same as any other search API client.
 - `internal/discovery` — turns a list of candidates into persisted
   companies/targets via a bounded worker pool over `internal/company`'s
   repositories and `internal/httpclient`. Two sources feed it the same

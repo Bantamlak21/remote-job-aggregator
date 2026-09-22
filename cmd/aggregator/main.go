@@ -234,9 +234,9 @@ func runMigrateForce(cfg *config.Config, logger *slog.Logger, args []string) err
 
 // newHTTPClient builds the one pooled HTTP client a command run uses —
 // shared across discovery's own HEAD/GET probing and (for
-// search-discover) the Google Custom Search calls that produce
-// candidates for it, rather than each constructing its own. CLAUDE.md's
-// rule: reuse configured clients, don't create one per caller.
+// search-discover) the Serper search calls that produce candidates for
+// it, rather than each constructing its own. CLAUDE.md's rule: reuse
+// configured clients, don't create one per caller.
 func newHTTPClient(cfg *config.Config) *httpclient.Client {
 	httpCfg := httpclient.DefaultConfig()
 	httpCfg.Timeout = cfg.HTTP.Timeout
@@ -317,9 +317,9 @@ func runDiscover(ctx context.Context, cfg *config.Config, logger *slog.Logger, a
 }
 
 // runSearchDiscover reads a plain-text list of company names (default
-// configs/company_names.txt), finds each one's ATS board via the Google
-// Custom Search API, and runs the same discovery pipeline runDiscover
-// does — HEAD/GET validation, then persistence — against the resulting
+// configs/company_names.txt), finds each one's ATS board via the Serper
+// search API, and runs the same discovery pipeline runDiscover does —
+// HEAD/GET validation, then persistence — against the resulting
 // candidates. This is the "real search instead of hand-curated seed
 // data" mechanism: a company name is enough, search finds the board.
 func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
@@ -329,7 +329,7 @@ func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Log
 		return err
 	}
 	if !cfg.Search.Configured() {
-		err := errors.New("search-discover requires GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID to be set")
+		err := errors.New("search-discover requires SERPER_API_KEY to be set")
 		logger.Error(err.Error())
 		return err
 	}
@@ -349,8 +349,7 @@ func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Log
 
 	httpClient := newHTTPClient(cfg)
 	searchClient := search.New(httpClient, search.Config{
-		APIKey:         cfg.Search.GoogleAPIKey,
-		SearchEngineID: cfg.Search.GoogleSearchEngineID,
+		APIKey: cfg.Search.SerperAPIKey,
 	})
 
 	candidates, searchErrs := discovery.CandidatesFromSearch(ctx, searchClient, names)

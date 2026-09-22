@@ -13,7 +13,7 @@ import (
 // SearchClient is the dependency CandidatesFromSearch needs from
 // internal/search — defined here, on the consumer side, matching
 // CompanyUpserter/TargetUpserter's pattern, so this file's own tests use
-// a fake instead of a real Google API key.
+// a fake instead of a real Serper API key.
 type SearchClient interface {
 	Search(ctx context.Context, query string) ([]search.Result, error)
 }
@@ -114,13 +114,13 @@ var ErrNoBoardFound = errors.New("discovery: no known ATS board found in search 
 // candidates. This keeps "how a candidate was found" (seed file, or
 // search) fully decoupled from "what happens once we have one".
 //
-// One company's search failing (quota exhausted, no board found, a
+// One company's search failing (credits exhausted, no board found, a
 // network error) does not stop the rest — every name is attempted, and
 // every failure is collected and returned alongside whatever candidates
-// were found. Searches run sequentially, not concurrently: Google's
-// Custom Search free tier is a 100-queries-a-day budget, not a
-// throughput problem worth a worker pool over — bursting it in parallel
-// buys nothing but a faster trip to a 429.
+// were found. Searches run sequentially, not concurrently: Serper's free
+// tier is a fixed pool of query credits, not a throughput problem worth
+// a worker pool over — bursting it in parallel buys nothing but a
+// faster trip to an exhausted account.
 func CandidatesFromSearch(ctx context.Context, client SearchClient, companyNames []string) ([]Candidate, []error) {
 	var candidates []Candidate
 	var errs []error
