@@ -1,6 +1,6 @@
 # Project Status
 
-_Last updated: 2026-09-22._
+_Last updated: 2026-09-23._
 
 ## 1. Project Overview
 
@@ -15,15 +15,21 @@ Target scale (architectural, not yet exercised): 10,000+ companies, 100,000+ job
 loading the full dataset into memory. Tech stack: Go (stdlib-first), PostgreSQL, Docker.
 Full requirements live in the repo's (gitignored, not committed) `CLAUDE.md`.
 
-**Phase 1 and Phase 2 are merged to `main`.** A search-based discovery mechanism (an
-extension of Phase 2's discovery, addressing the explicit requirement to find companies via
-a real web search instead of a hand-curated seed file) is implemented and merged (PR #4,
-built against the Google Custom Search API). A same-session follow-up swapping the search
-provider to Serper, because Google's API became unviable and Brave's free tier requires a
-credit card, is reviewed and open as PR #5, not yet merged; see Section 2's "Search-based
-discovery" subsection. There is still no ATS integration, ingestion, filtering, ranking,
-scheduling, or notification code: nothing in the system yet reads or stores an actual job
-posting.
+**Phase 1 and Phase 2 are merged to `main`.** The search-based discovery mechanism (PR #4,
+originally Google Custom Search) and its follow-up provider swap to Serper (PR #5, Google's
+API having become unviable and Brave's free tier requiring a credit card) are both merged.
+See Section 2's "Search-based discovery" subsection for that history.
+
+**New, this session: a public read-only job API (`aggregator serve`) plus a separate React
+frontend repository (`remote-job-aggregator-web`), a job-board preview UI.** Real ATS
+ingestion (Phase 3) still hasn't shipped — `jobs` remains an empty table — so the API serves
+12 illustrative fixture jobs from a new `internal/job.MockRepository`, behind the same
+`job.Repository` interface a real Postgres-backed implementation will later satisfy with no
+API or frontend change required. Both the backend and the frontend passed independent
+adversarial critic review (ACCEPT on both, one minor fix applied to each — see Section 2's
+"Public job API and job-board frontend" subsection). The backend change is committed on this
+branch, not yet pushed/PR'd as of this document; the frontend repo is committed locally with
+no remote configured yet.
 
 ## 2. Completed Work
 
@@ -407,12 +413,184 @@ Postgres, and cross-checked every per-package test count against Section 7's tab
 matched exactly; and confirmed README.md/`.env.example`/this document accurately describe
 Serper (not stale Google claims) and do not overclaim verification that didn't happen.
 
+**PR #5 has since merged to `main`** (commit `0e93efe`, merge commit `ddccbb0`) — the search
+provider swap described above is fully landed, not just reviewed.
+
+---
+
+### Public job API and job-board frontend (this session, complete)
+
+**Status: complete. Two independent adversarial critic passes, run in parallel, both
+ACCEPT.** No schema migration.
+
+**Backend critic (Go API): ACCEPT.** Verified the contract match, pagination edge cases,
+concurrency safety of `MockRepository`, CORS/preflight behavior, graceful shutdown and
+bind-failure handling, and hostile-input handling (unicode, oversized query strings,
+path-traversal-looking ids) — all live against a real running server, not just the test
+suite. One non-blocking nit: `fixtureJobs`'s doc comment claimed coverage of "every
+RemoteType" while no fixture actually used `onsite`. Fixed by correcting the comment (not
+by forcing a fixture into an onsite label that didn't fit any of the 12 companies) — zero
+ripple into the many places that reference "12 fixture jobs" by count.
+
+**Frontend critic (React UI): ACCEPT.** Verified all 8 frozen rubric items against real
+headless-Chrome screenshots (desktop, mobile/360px — genuinely zero horizontal scroll, light
+mode via a forced `prefers-color-scheme`, the detail page, and a live-triggered error state)
+plus direct code reads (the `rel="noopener noreferrer"` on the Apply link, focus-visible
+states, aria-labels, the debounce/clear race's actual fix). Found one real, non-blocking bug:
+a hand-edited out-of-range `?page=` produced a real total next to a contradictory "no jobs
+match your filters" empty state — not reachable through the UI itself (Pagination hides once
+there's only one page), only by editing the URL directly. **Fixed** (commit `92b8fae` in
+`remote-job-aggregator-web`): an out-of-range page is now treated as transient — the URL
+self-corrects to the last valid page and the skeleton shows instead of the contradictory
+combination, verified fixed with a live headless-Chrome screenshot of the exact
+previously-broken URL. Also closed a named test-coverage gap: the debounce/clear race was
+correct in code but not exercised by the committed suite — added the exact scenario as a
+regression test. Frontend suite is now 31 tests (was 29), still 100% passing, `npm run
+build` still clean.
+
+**Why this exists:** the user asked to "continue building the frontend with amazing UI/UX
+design before moving to phase 3," resolved through two rounds of clarifying questions (recorded
+here for continuity) to: (1) scope — a public job-board preview (search/browse/filter jobs)
+built now against mock data, not an internal ops dashboard over the real
+companies/target_companies data; (2) location — a brand-new, separate sibling git repository,
+not a subdirectory of this repo; (3) stack — a React SPA talking to a new Go JSON API, not
+server-rendered Go templates.
+
+**`internal/job`** (new package) — the normalized `Job` domain type, `RemoteType`/
+`EmploymentType` enums (each with a `.Valid()` method), the `Filter`/`ListResult` types, and
+the `Repository` interface `internal/api` depends on. `MockRepository` is the only
+implementation today: 12 hand-written, illustrative fixture jobs (real, verifiable company
+career-page domains; synthetic job content, clearly documented as such in the package
+comment) spanning every `RemoteType`/`EmploymentType` value. Deterministic: no `time.Now()`,
+fixed `PostedAt` dates, safe for concurrent reads (immutable slice after construction, no
+lock needed). `List` filters (query/remote_type/employment_type/company/tag), sorts
+newest-first (ties broken by ID), and paginates; `Get` returns `ErrNotFound` for an unknown
+id. Tests: `internal/job/mock_test.go` — every filter independently and in combination,
+pagination boundaries (exact page, past the last page), context cancellation, both enums'
+`.Valid()`.
+
+**`internal/api`** (new package) — the HTTP layer. `NewHandler` wires two routes
+(`GET /api/v1/jobs`, `GET /api/v1/jobs/{id}`, using Go 1.22+ stdlib `http.ServeMux` method+
+pattern routing — no third-party router, per "vanilla by default") through CORS and
+request-logging middleware, over `job.Repository` — never a concrete type. `parseFilter`
+validates every query parameter at the boundary (invalid `remote_type`/`employment_type`,
+non-numeric or out-of-range `page`/`page_size` are all `400`s with a specific message, never
+silently ignored or clamped). DTOs (`jobSummaryDTO`/`jobDetailDTO`) mirror `docs/api.md`
+exactly, including `company_logo_url` serializing as JSON `null` (via a `*string`) rather
+than an empty string. CORS allows exactly one configured origin, never a wildcard, and an
+`OPTIONS` preflight is answered directly without ever reaching the mux/repository. Tests:
+`internal/api/handlers_test.go` — every documented success/error path, the null-logo-URL
+serialization, CORS headers present, preflight never touches the repository (a
+panic-if-called fake proves it), RFC3339 `posted_at` format.
+
+**`internal/config`** — added `APIConfig` (`Addr`, `CORSAllowedOrigin`), env vars `API_ADDR`
+(default `:8080`, validated via `net.SplitHostPort`) and `CORS_ALLOWED_ORIGIN` (default
+`http://localhost:5173`, must be non-blank). Tests: defaults, overrides, both rejection paths.
+
+**CLI — `aggregator serve`** — starts `api.NewServer` backed by `job.NewMockRepository()`,
+integrated with the same signal-handling/graceful-shutdown pattern `runApp` already
+established. A real bug was caught by the test written for this (see below), fixed, and left
+documented in a code comment rather than papered over.
+
+**Bug found by its own test, fixed:** the first version of
+`TestRunServe_StartsRespondsAndShutsDownCleanly` made a plain `http.Get` in a polling helper
+and closed the response body without draining it first. That left the connection in a state
+Go's `http.Server.Shutdown` doesn't consider "idle" promptly, so the test's shutdown wait hung
+past its 5-second deadline. Fixed the test (drain the body before closing) and, since the
+underlying behavior is real and worth knowing operationally — not just a test artifact —
+added a comment on `runServe`'s `Shutdown` call explaining that a client which doesn't drain
+response bodies can make a graceful shutdown take up to the full `SHUTDOWN_TIMEOUT` instead of
+returning instantly. Bounded, not a hang, but worth knowing if a deploy ever seems to wait the
+full timeout on this command.
+
+**Manual live verification performed** (beyond the automated test suite): built the real
+binary, ran `aggregator serve` against the real running Postgres container's connection
+string (unused by `serve` itself, but still required by `config.Load()`), and `curl`'d every
+documented path — list with pagination, detail fetch, invalid `remote_type` (400), unknown id
+(404), OPTIONS preflight (204 with the right CORS header) — confirming the real server's
+output byte-for-byte matches what the automated tests assert.
+
+**`internal/discovery`, `internal/company`, `internal/search`, `internal/config`'s existing
+fields: untouched.** This is additive — no existing behavior changed except the new
+`APIConfig` fields being added to `Config`.
+
+---
+
+### remote-job-aggregator-web (new, separate repository)
+
+**Status: complete — implemented, tested, live-verified, independently critic-reviewed
+(ACCEPT), one bug found by that review fixed and re-verified (see the "Public job API and
+job-board frontend" subsection above for the critic findings and the fix).** Lives entirely
+outside this repository at `/home/bantamlak/my-repos/remote-job-aggregator-web`
+— its own git history, `git init`'d fresh this session, all work on a local branch `init`
+(not `main`), **no remote configured and nothing pushed anywhere** — that decision (GitHub or
+not, and where) is explicitly deferred to Bantamlak, not assumed.
+
+**Stack:** React 19 + Vite 7 + TypeScript + Tailwind CSS v4 + React Router 7. No heavier
+component runtime (no shadcn/ui, no Next.js) — every card/badge/filter control is a small,
+hand-built Tailwind component, a deliberate choice documented in that repo's own README, not
+an oversight.
+
+**Built:** a list view (`/`) — debounced search, filters for remote type/employment
+type/tag, a responsive job-card grid, numbered pagination with a visible total count, and
+designed loading/empty/error states (not spinner-only, not a blank screen) — and a detail
+view (`/jobs/:id`) with the full description, an "Apply for this role" CTA (opens
+`application_url` in a new tab), and a back link that restores prior filter/search/page
+state. Light/dark/system theme with a manual toggle, persisted, with an anti-flash inline
+script. Filter/search/page state lives in the URL query string (shareable, survives a
+refresh).
+
+**A real bug was found and fixed during that session's own test-writing** (not by this
+session, but recorded here since it's directly relevant to the frozen "clear filters must
+actually clear" acceptance criterion): the original debounce design let a stale, already-in-
+flight debounced search value race a `clearFilters` call and silently re-write the just-
+cleared search term back into the URL a moment later. Fixed by reading the search term
+directly from the URL and using a cancelable manual timer `clearFilters` cancels
+synchronously; caught by that repo's own `useJobFilters.test.tsx`.
+
+**Tested:** Vitest + React Testing Library, 29 tests across 6 files, all passing (API client
+query construction, job card field rendering, filter-state URL round-trip including the bug
+above, empty/error state rendering, a `JobListPage` integration suite mocking fetch end to
+end). `npm run build` (`tsc -b && vite build`) compiles with zero TypeScript errors.
+
+**Manually verified by this session, independent of the builder's own report** — real
+screenshots via headless Chrome (`/usr/bin/google-chrome --headless=new`) against the real
+running Go backend, not just code-reading:
+- Desktop (1440px): dark-theme job-card grid renders real fixture data — companies, titles,
+  colored remote/employment-type badges, tag pills, relative posted dates ("2 days ago"),
+  search bar, three filter dropdowns, "12 jobs found" count. Genuinely polished — restrained
+  indigo/dark palette, consistent spacing, readable at a glance.
+- Mobile (360px): single-column layout, no horizontal scroll, filters wrap into a compact
+  stack, long titles truncate cleanly (e.g. "Backend Engineer, Payme…") rather than
+  overflowing or wrapping awkwardly.
+- Detail page: full description text pulled live from the real API, styled "Apply for this
+  role" CTA, working "Back to results" link.
+- Light mode was independently re-verified by the frontend critic pass (forced
+  `prefers-color-scheme` via a Chrome `--blink-settings` flag, confirmed against
+  `ThemeProvider.tsx` and the anti-flash inline script's matching logic): fully readable,
+  correct contrast, no leftover dark-only elements. The gap noted earlier in this session's
+  own manual pass is closed.
+
+**Known, documented limitation (the builder's own, not hidden):** the API has no "list all
+tags" endpoint, so the tag-filter dropdown's options are sampled from one `page_size=100`
+request's distinct tags. Correct today (12 jobs, one page), will under-count rare tags once
+real volume ships post-Phase-3. Flagged in that repo's own code comment and README.
+
 ## 3. Work In Progress
 
-Nothing is mid-implementation in the codebase itself. PR #4 (Google-based search-discovery)
-is merged. PR #5 (the Serper provider swap) has passed its own independent critic review
-(ACCEPT) and is committed, pushed, and open — awaiting merge, the one outstanding
-administrative step, not development work.
+PR #4 and PR #5 (search-discovery, Google then Serper) are both merged — no outstanding
+administrative step there. **The job API + job-board frontend work is code-complete and
+both-critics-ACCEPT**, but has two outstanding administrative steps, not development work:
+
+1. The backend change (`internal/job`, `internal/api`, `serve`, `docs/api.md`, and this
+   document's own updates) is committed on branch `Bantamlak21/frontend-dashboard-e451cddd`
+   in this worktree, not yet pushed or opened as a PR.
+2. `remote-job-aggregator-web` is committed locally (branch `init`) with no remote —
+   whether/where it gets one is Bantamlak's call, not assumed by this session.
+
+Whoever picks this up next: check whether step 1 has since become a PR (and whether it
+merged) and whether step 2's remote question has been answered, rather than trusting this
+paragraph once time has passed.
 
 **The original shared checkout** at `/home/bantamlak/my-repos/remote-job-aggregator` (as
 distinct from the worktree this document was written in) had, as of Phase 2's writing, two
@@ -551,7 +729,12 @@ cmd/aggregator (composition root)
     ├─ internal/search          (Serper search API client)
     ├─ internal/company         (Store/TargetStore over companies/target_companies)
     ├─ internal/discovery       (seed OR search → candidates → probe → persist)
+    ├─ internal/job             (Job type, Repository interface, MockRepository)
+    ├─ internal/api             (public read-only job API — serve command)
     └─ configs/                 (seed_companies.json, company_names.txt)
+
+remote-job-aggregator-web (separate repo, not in this tree)
+    └─ React SPA — job-board preview UI, talks to internal/api over HTTP
 ```
 
 One deployable binary. `cmd/aggregator/main.go` is the only place that wires concrete
@@ -568,10 +751,11 @@ JSON file, `CandidatesFromSearch` from a search) converge on the same `Discovere
 pipeline — "how a candidate was found" is fully decoupled from "what happens once we have
 one."
 
-**Planned, not implemented:** `internal/ats`, `internal/ingestion`, `internal/job`,
-`internal/filtering`, `internal/ranking`, `internal/notification`, `internal/scheduler` — see
-Section 4. These packages do not exist on disk. Do not assume any of their functionality when
-reasoning about what the system currently does.
+**Planned, not implemented:** `internal/ats`, `internal/ingestion`, `internal/filtering`,
+`internal/ranking`, `internal/notification`, `internal/scheduler` — see Section 4. These
+packages do not exist on disk. Do not assume any of their functionality when reasoning about
+what the system currently does. `internal/job` exists but only as domain types + a mock
+repository — Phase 3 adds the real Postgres-backed implementation, not a new package.
 
 **Concurrency implemented today:** `pgxpool`'s internal connection management (bounded by
 config); the CLI's signal-handling goroutines (`installSignalHandling`, `watchGracefulStop`,
@@ -581,25 +765,29 @@ pool). No ingestion pipeline yet — that arrives in Phase 3.
 
 ## 7. Testing and Verification Status
 
-**Run and passing as of this document (2026-09-22, this worktree, search-discovery work not
-yet committed):**
+**Run and passing as of this document (2026-09-23, this worktree, job API/frontend work
+committed to the backend side, PR not yet opened — see Section 3):**
 
 ```bash
 gofmt -l .                             # clean
 go build ./...                         # clean
 go vet ./...                           # clean
 TEST_DATABASE_URL=postgres://aggregator:aggregator@localhost:5432/aggregator_test \
-  go test -race -p 1 -count=1 ./...    # all 9 packages ok, real Postgres, race detector —
+  go test -race -p 1 -count=1 ./...    # all 11 packages ok, real Postgres, race detector —
                                         #   20 internal/database, 31 internal/company,
                                         #   29 internal/httpclient, 37 internal/discovery,
-                                        #   27 internal/config, 10 internal/search,
-                                        #   8 internal/observability, 19 cmd/aggregator
+                                        #   31 internal/config, 10 internal/search,
+                                        #   8 internal/observability, 15 internal/job,
+                                        #   11 internal/api, 21 cmd/aggregator
 ```
 
-`internal/search` and the new tests in `internal/discovery`/`internal/company`/
-`internal/config`/`internal/observability`/`cmd/aggregator` are new/changed this session.
-All verified passing individually and as part of the full-suite run above; zero regressions
-in any pre-existing test.
+`internal/job` and `internal/api` are new this session; `internal/config` and
+`cmd/aggregator` gained new tests for `APIConfig`/`serve`. All verified passing individually
+and as part of the full-suite run above; zero regressions in any pre-existing test.
+
+**Frontend (`remote-job-aggregator-web`, separate repo):** Vitest + React Testing Library,
+29 tests across 6 files, all passing; `npm run build` (`tsc -b && vite build`) compiles with
+zero TypeScript errors. Run from that repo's own directory, not this one.
 
 **`-p 1` is required** whenever `TEST_DATABASE_URL` is set and more than one package's tests
 run together: `internal/database` and `internal/company` both reset the shared
@@ -635,6 +823,16 @@ confirming real rows persisted with correct `discovery_metadata`; ~44 real ATS b
 probed directly with `curl` (Greenhouse, Lever, Ashby, and a few others) to check the HEAD/GET
 fallback claim; a from-scratch redirect-budget test matrix against `httptest` servers,
 independent of the checked-in test suite, to verify the `MaxRedirects` off-by-one fix.
+
+**Live verification performed this session for the job API + frontend:** the real
+`aggregator` binary run as `serve` against the real Postgres container's connection string
+(required by config, unused by the command itself), `curl`'d for every documented path
+(list, pagination, detail, 400, 404, OPTIONS preflight) — output matched the automated tests
+exactly. The frontend's dev server was run against that real backend and captured with
+actual headless-Chrome screenshots (`/usr/bin/google-chrome --headless=new`) at desktop
+(1440px) and mobile (360px) widths, plus the job detail route — real rendered data, not a
+code-reading guess. Light mode specifically was not re-verified visually this session (see
+Section 8).
 
 **Missing tests:** none within Phase 1, Phase 2, or the search-discovery extension's own
 scope — every behavior change in this session shipped with a regression test, per CLAUDE.md.
@@ -697,25 +895,47 @@ because none of that code exists yet.
 - **`configs/company_names.txt`'s two example names (Spotify, Airbnb) are unverified against
   the real search API**, unlike `configs/seed_companies.json`'s live-verified examples — see
   above. The file's own header comment says so.
+- **The job API's data is entirely mock/illustrative.** `internal/job.MockRepository`'s 12
+  fixture jobs are not real postings — real `application_url` domains, synthetic titles and
+  descriptions. This is by design (Phase 3 hasn't shipped real ingestion) and documented in
+  the package comment, `docs/api.md`, and this document, but worth restating so nobody mistakes
+  the job-board frontend's contents for real listings before Phase 3 lands.
+- **The tag-filter dropdown's vocabulary is sampled, not authoritative.** No endpoint lists
+  every tag that exists; the frontend samples one `page_size=100` request's distinct tags.
+  Correct today (12 jobs fit one page); will under-count rare tags once real job volume
+  ships. Flagged in `remote-job-aggregator-web`'s own code and README, not hidden.
+- **`remote-job-aggregator-web` has no remote configured and nothing pushed anywhere.**
+  Whether it gets a GitHub remote, and under which account/org, is explicitly Bantamlak's
+  call, not assumed by either builder session. All work (13 commits on `init`) is safe
+  locally in the meantime.
+- **The backend job-API change is committed but not yet pushed/PR'd** — see Section 3.
 
 ## 9. Exact Next Step
 
-**Two independent next steps — neither blocks the other:**
+**Three independent next steps — none blocks another:**
 
-1. **External, needs Bantamlak:** obtain a real `SERPER_API_KEY` (free, no card — see
+1. **This session's own unfinished business, administrative only — the code itself is
+   done:** push the backend branch and open a PR (Section 3), and decide with Bantamlak what
+   happens to `remote-job-aggregator-web` — stays local, or gets a remote. Both critic passes
+   already returned ACCEPT and their findings are already fixed; nothing left to build here.
+2. **External, needs Bantamlak:** obtain a real `SERPER_API_KEY` (free, no card — see
    Section 8) and run `search-discover` end to end against the real Serper API — see
    Section 8's `internal/search` known-issue entry for exactly what that verification should
-   check. This does not block Phase 3 and can happen whenever a key becomes available.
-2. **Development, no external dependency: start Phase 3** — build the `internal/ats`
-   package with a Greenhouse client, and `internal/job` for the normalized job type.
+   check. Independent of everything else; can happen whenever a key becomes available.
+3. **Development, no external dependency: start Phase 3** — build the `internal/ats`
+   package with a Greenhouse client, and extend `internal/job` with a real Postgres-backed
+   `Repository` implementation (the type/interface already exist; Phase 3 adds the second
+   implementation, not a new package) over the existing `jobs` table.
 
 Why this and not `internal/ingestion` first: ingestion's job is to orchestrate "for each
 active target, fetch its jobs, normalize them, persist them" — it needs both something that
-knows how to fetch+parse a specific ATS's response format (`internal/ats`) and a normalized
-`job.Post` type with the identity/lifecycle rules from CLAUDE.md §9 to persist into (backed by
-a new `internal/job` repository over the existing `jobs` table, following the exact same
-`Store`/`Upsert`-via-`ON-CONFLICT` pattern `internal/company` already established and proved
-out). Building the ATS client and the job type first, each independently testable against
+knows how to fetch+parse a specific ATS's response format (`internal/ats`) and a Postgres-
+backed `job.Repository` implementation with the identity/lifecycle rules from CLAUDE.md §9,
+over the existing `jobs` table, following the exact same `Store`/`Upsert`-via-`ON-CONFLICT`
+pattern `internal/company` already established and proved out — `internal/job`'s `Job` type
+and `Repository` interface already exist (this session), so this is adding a second
+implementation next to `MockRepository`, not designing the type from scratch. Building the
+ATS client and the real repository first, each independently testable against
 fixtures/fakes, means ingestion's own tests can focus on orchestration (worker pool, error
 isolation between targets, change detection) rather than re-deriving Greenhouse's response
 shape or job identity rules inline.
@@ -735,13 +955,14 @@ a real employer's board.
 2. Read `CLAUDE.md` at the repo root (gitignored — present locally, not on GitHub; if it's
    missing, ask Bantamlak for a copy before proceeding, since it carries the authoritative
    project requirements and the mandatory branching/testing/review workflow).
-3. PR #3 (Phase 2) and PR #4 (Google-based search-discovery) are merged to `main` as of this
-   document. Check whether PR #5 (the Serper provider swap, branch
-   `Bantamlak21/swap-search-provider-e451cddd`) has since been merged — if it has, this
-   document's Section 2/3 "open, not yet merged" language is stale; update it rather than
-   trusting it. Also check whether a real `SERPER_API_KEY` has been provided since — if so,
-   Section 8's `internal/search` known-issue entry needs the live-verification follow-up
-   actually performed, not just planned.
+3. PR #3, #4, and #5 are all merged to `main` as of this document. Check whether the job
+   API's own PR (branch `Bantamlak21/frontend-dashboard-e451cddd` at the time of writing,
+   not yet opened — see Section 3) has since been opened/merged; if merged, this document's
+   Section 2/3 framing is stale, update it rather than trusting it. Also check: whether a real
+   `SERPER_API_KEY` has been provided (Section 8's `internal/search` entry needs its
+   live-verification follow-up actually performed if so), and whether
+   `/home/bantamlak/my-repos/remote-job-aggregator-web` has since gotten a remote/been pushed
+   anywhere (Section 8 notes it had neither as of this writing).
 4. Run the verification commands in [Section 7](#7-testing-and-verification-status) to
    confirm the state this document describes still matches reality — this document is a
    snapshot, not a live source of truth. If something doesn't match, trust the repository

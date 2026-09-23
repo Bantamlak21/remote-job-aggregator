@@ -15,17 +15,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Bantamlak12/remote-job-aggregator/internal/api"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/database"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/discovery"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/httpclient"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/observability"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|serve>"
 
 const (
 	defaultSeedFile         = "configs/seed_companies.json"
@@ -108,7 +110,7 @@ func run(ctx context.Context, args []string) error {
 
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover":
+	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "serve":
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q: %s", cmd, usage)
@@ -148,6 +150,8 @@ func run(ctx context.Context, args []string) error {
 		return runDiscover(ctx, cfg, logger, rest)
 	case "search-discover":
 		return runSearchDiscover(ctx, cfg, logger, rest)
+	case "serve":
+		return runServe(ctx, cfg, logger, rest)
 	}
 	return nil // unreachable: cmd was validated above
 }
@@ -373,6 +377,59 @@ func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Log
 	d := newDiscoverer(cfg, db, httpClient, logger)
 	results := d.Run(ctx, candidates)
 	return reportDiscoveryResults(logger, results)
+}
+
+// runServe starts the public, read-only job API (see docs/api.md).
+// Backed by job.NewMockRepository() for now — there is no ATS
+// ingestion yet, so no real jobs table to serve from — but internal/api
+// depends only on job.Repository, so swapping in a real
+// Postgres-backed implementation once Phase 3 ships is the entire
+// migration: this function is the only place that constructs which
+// implementation gets used.
+func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
+	if len(args) != 0 {
+		err := errors.New("serve: usage: serve")
+		logger.Error(err.Error())
+		return err
+	}
+
+	repo := job.NewMockRepository()
+	server := api.NewServer(repo, api.Config{
+		Addr:              cfg.API.Addr,
+		CORSAllowedOrigin: cfg.API.CORSAllowedOrigin,
+	}, logger)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	logger.Info("starting API server", "addr", cfg.API.Addr, "cors_allowed_origin", cfg.API.CORSAllowedOrigin)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			logger.Error("API server failed", "error", err)
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		logger.Info("shutdown signal received, closing API server")
+		// http.Server.Shutdown only force-closes connections it considers
+		// idle immediately; a keep-alive connection whose client hasn't
+		// fully drained the previous response body can look "active" to
+		// the server for longer than expected, so a shutdown can take up
+		// to the full timeout below in that case rather than returning
+		// instantly — bounded, not a hang, but worth knowing if a deploy
+		// ever seems to wait the full SHUTDOWN_TIMEOUT on this command.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Shutdown.Timeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("API server shutdown did not complete cleanly", "error", err)
+			return err
+		}
+		logger.Info("shutdown complete")
+		return nil
+	}
 }
 
 // runApp starts the long-running process: connect to the database, then

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -132,6 +133,19 @@ type HTTPConfig struct {
 	UserAgent        string
 }
 
+// APIConfig configures the public read-only job API server (the
+// `serve` command). Addr is a net.Listen address (":8080", not just a
+// bare port) so it matches http.Server.Addr's own documented form
+// directly. CORSAllowedOrigin is a single explicit origin, not "*" —
+// the frontend is a known, specific origin during development
+// (Vite's default dev server), and an explicit allow-list origin is
+// the deliberate choice over a wildcard even though this API serves
+// only public, non-authenticated data.
+type APIConfig struct {
+	Addr              string
+	CORSAllowedOrigin string
+}
+
 // DiscoveryConfig bounds discovery's own concurrency, independent of the
 // database pool or any future ingestion worker pool (CLAUDE.md: "Database
 // and HTTP concurrency should also be bounded" — separately from each
@@ -181,6 +195,7 @@ type Config struct {
 	HTTP      HTTPConfig
 	Discovery DiscoveryConfig
 	Search    SearchConfig
+	API       APIConfig
 }
 
 // Load reads and validates configuration from the process environment.
@@ -290,6 +305,18 @@ func Load() (*Config, error) {
 
 	serperAPIKey := getEnv("SERPER_API_KEY", "")
 
+	apiAddr := getEnv("API_ADDR", ":8080")
+	if strings.TrimSpace(apiAddr) == "" {
+		errs = append(errs, errors.New("API_ADDR must not be blank"))
+	} else if _, _, err := net.SplitHostPort(apiAddr); err != nil {
+		errs = append(errs, fmt.Errorf("API_ADDR must be a valid host:port (e.g. \":8080\"): %w", err))
+	}
+
+	corsAllowedOrigin := getEnv("CORS_ALLOWED_ORIGIN", "http://localhost:5173")
+	if strings.TrimSpace(corsAllowedOrigin) == "" {
+		errs = append(errs, errors.New("CORS_ALLOWED_ORIGIN must not be blank"))
+	}
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
@@ -322,6 +349,10 @@ func Load() (*Config, error) {
 		},
 		Search: SearchConfig{
 			SerperAPIKey: serperAPIKey,
+		},
+		API: APIConfig{
+			Addr:              apiAddr,
+			CORSAllowedOrigin: corsAllowedOrigin,
 		},
 	}, nil
 }

@@ -16,7 +16,7 @@ func clearAll(t *testing.T) {
 		"APP_ENV", "DATABASE_URL", "DB_MAX_OPEN_CONNS", "DB_MIN_CONNS",
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
-		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY",
+		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN",
 	} {
 		t.Setenv(key, "")
 	}
@@ -467,6 +467,68 @@ func TestLoad_SearchConfigOverrideRespected(t *testing.T) {
 	}
 	if cfg.Search.SerperAPIKey != "test-api-key" {
 		t.Errorf("Search.SerperAPIKey = %q, want %q", cfg.Search.SerperAPIKey, "test-api-key")
+	}
+}
+
+func TestLoad_APIConfigDefaults(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.API.Addr != ":8080" {
+		t.Errorf("API.Addr = %q, want %q", cfg.API.Addr, ":8080")
+	}
+	if cfg.API.CORSAllowedOrigin != "http://localhost:5173" {
+		t.Errorf("API.CORSAllowedOrigin = %q, want %q", cfg.API.CORSAllowedOrigin, "http://localhost:5173")
+	}
+}
+
+func TestLoad_APIConfigOverridesRespected(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("API_ADDR", ":9090")
+	t.Setenv("CORS_ALLOWED_ORIGIN", "https://jobs.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.API.Addr != ":9090" {
+		t.Errorf("API.Addr = %q, want %q", cfg.API.Addr, ":9090")
+	}
+	if cfg.API.CORSAllowedOrigin != "https://jobs.example.com" {
+		t.Errorf("API.CORSAllowedOrigin = %q, want %q", cfg.API.CORSAllowedOrigin, "https://jobs.example.com")
+	}
+}
+
+func TestLoad_APIConfigRejectsMalformedAddr(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("API_ADDR", "not-a-host-port")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for a malformed API_ADDR, got nil")
+	}
+	if !strings.Contains(err.Error(), "API_ADDR") {
+		t.Errorf("error = %q, want it to mention API_ADDR", err.Error())
+	}
+}
+
+func TestLoad_APIConfigRejectsBlankCORSOrigin(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("CORS_ALLOWED_ORIGIN", "   ")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error for a blank CORS_ALLOWED_ORIGIN, got nil")
+	}
+	if !strings.Contains(err.Error(), "CORS_ALLOWED_ORIGIN") {
+		t.Errorf("error = %q, want it to mention CORS_ALLOWED_ORIGIN", err.Error())
 	}
 }
 

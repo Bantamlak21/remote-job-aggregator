@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -190,6 +193,99 @@ func TestRunSearchDiscover_MissingNamesFileFailsBeforeTouchingTheDatabase(t *tes
 	if !strings.Contains(err.Error(), "opening company names file") {
 		t.Errorf("error = %q, want it to mention opening the names file", err.Error())
 	}
+}
+
+func TestRunServe_RejectsArgs(t *testing.T) {
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	err := run(context.Background(), []string{"serve", "unexpected-arg"})
+	if err == nil {
+		t.Fatal(`serve with an unexpected arg = nil, want an error`)
+	}
+}
+
+// End-to-end through the real dispatcher: starts the API server on an
+// OS-assigned free port, makes a real HTTP request against it, then
+// cancels the context and confirms runServe returns cleanly within the
+// shutdown timeout — proving the config -> job.NewMockRepository ->
+// api.NewServer -> graceful-shutdown wiring in runServe actually works,
+// not just that internal/api's handlers work in isolation (covered
+// separately by internal/api's own tests).
+func TestRunServe_StartsRespondsAndShutsDownCleanly(t *testing.T) {
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("API_ADDR", freeTCPAddr(t))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, []string{"serve"}) }()
+
+	baseURL := "http://" + os.Getenv("API_ADDR")
+	if !waitForServer(t, baseURL+"/api/v1/jobs", 2*time.Second) {
+		cancel()
+		t.Fatal("server never became ready")
+	}
+
+	resp, err := http.Get(baseURL + "/api/v1/jobs")
+	if err != nil {
+		cancel()
+		t.Fatalf("GET /api/v1/jobs failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), `"total":12`) {
+		cancel()
+		t.Fatalf("body = %s, want it to include the 12 mock fixture jobs' total", body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("run() after cancel = %v, want nil (clean shutdown)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServe did not shut down within 5s of context cancellation")
+	}
+}
+
+// freeTCPAddr returns a "127.0.0.1:<port>" address for an OS-assigned
+// free port, releasing it immediately so runServe's own listener can
+// bind it. A tiny window exists where another process could grab the
+// same port first; accepted as a standard, low-flake testing pattern
+// rather than plumbing a real listener handle through runServe.
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("finding a free port: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return addr
+}
+
+// waitForServer polls url until it responds or timeout elapses,
+// because the server goroutine above needs a moment to start listening
+// before the first request can succeed.
+func waitForServer(t *testing.T, url string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 func TestCloseWithTimeout_ReturnsNilOnPromptClose(t *testing.T) {

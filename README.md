@@ -50,6 +50,7 @@ aggregator discover [seed-file]       # validate candidate ATS boards from a see
 aggregator search-discover [names-file]  # find each company's ATS board via the Serper
                                        # search API (default configs/company_names.txt),
                                        # then the same validate-and-persist as discover
+aggregator serve                      # start the public, read-only job API (see docs/api.md)
 ```
 
 `migrate-down` always requires `--yes`: rolling back even one migration is
@@ -106,6 +107,8 @@ raw credential even when the value itself was the problem.
 | `HTTP_USER_AGENT` | no | `remote-job-aggregator/1.0 (+https://github.com/Bantamlak12/remote-job-aggregator)` | sent on every outbound request; must not be blank |
 | `DISCOVERY_WORKERS` | no | `5` | bounded concurrency for discovery's HTTP probes; 1 – 100 |
 | `SERPER_API_KEY` | no | — | only for `search-discover`; from https://serper.dev/api-keys |
+| `API_ADDR` | no | `:8080` | only for `serve`; must be a valid `host:port` |
+| `CORS_ALLOWED_ORIGIN` | no | `http://localhost:5173` | only for `serve`; a single explicit origin, never `*` |
 | `TEST_DATABASE_URL` | no | — | integration tests only; database name must end in `_test` |
 
 Config values passed via `DATABASE_URL`'s own query string (e.g.
@@ -250,6 +253,23 @@ pool over. `configs/company_names.txt` ships with two names
 this specific command — that needs a real API key this environment
 doesn't have; verify them yourself once you've set credentials up.
 
+## Job API
+
+```bash
+aggregator serve   # http://localhost:8080/api/v1/jobs
+```
+
+Public, read-only JSON API backing a job-board frontend — full contract in
+[docs/api.md](docs/api.md). Today it serves 12 illustrative fixture jobs from
+`internal/job.MockRepository`, since Phase 3 (ATS ingestion) hasn't shipped a real
+`jobs` table yet. `internal/api` depends only on the `job.Repository` interface, never
+`MockRepository` directly — swapping in a real Postgres-backed implementation later is a
+one-line change in `runServe` (`cmd/aggregator/main.go`), with no handler, routing, or
+frontend change required.
+
+CORS is a single explicit allowed origin (`CORS_ALLOWED_ORIGIN`, default matching Vite's
+dev server), never a wildcard.
+
 ## Docker
 
 ```bash
@@ -303,14 +323,26 @@ Modular monolith, one deployable binary. Package boundaries so far:
   logic (HEAD/GET fallback, concurrency bound, error propagation, URL
   pattern matching) is tested with fakes instead of a database or a real
   API key.
+- `internal/job` — the normalized `Job` type and the `Repository`
+  interface `internal/api` depends on. `MockRepository` (deterministic
+  fixture data) is the only implementation today; a real Postgres-backed
+  one arrives with Phase 3 and is a drop-in swap, not a rewrite.
+- `internal/api` — the public, read-only job API (`serve`). Routing,
+  JSON encoding, CORS, and request logging over `job.Repository` — never
+  a concrete repository type. Full contract in [docs/api.md](docs/api.md).
 - `migrations/` — versioned SQL, embedded via `go:embed`.
 - `configs/` — operator-editable data files: `seed_companies.json` (full
   board records) and `company_names.txt` (just names, for
   `search-discover`).
 - `cmd/aggregator` — composition root: wires config → logger → pool,
   dispatches `run`/`migrate-up`/`migrate-down`/`migrate-force`/
-  `discover`/`search-discover`, handles graceful shutdown.
+  `discover`/`search-discover`/`serve`, handles graceful shutdown.
 
-`ats`, `ingestion`, `job`, `filtering`, `ranking`, `notification`, and
+`ats`, `ingestion`, `filtering`, `ranking`, `notification`, and
 `scheduler` do not exist yet — they're created when the phase that needs
 them lands, not before.
+
+A separate frontend (React + Vite + TypeScript + Tailwind, a job-board
+preview UI) lives in its own repository, `remote-job-aggregator-web`,
+not in this one — it talks to `serve` over HTTP and has no other
+coupling to this codebase.
