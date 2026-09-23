@@ -27,9 +27,9 @@ ingestion (Phase 3) still hasn't shipped — `jobs` remains an empty table — s
 `job.Repository` interface a real Postgres-backed implementation will later satisfy with no
 API or frontend change required. Both the backend and the frontend passed independent
 adversarial critic review (ACCEPT on both, one minor fix applied to each — see Section 2's
-"Public job API and job-board frontend" subsection). The backend change is committed on this
-branch, not yet pushed/PR'd as of this document; the frontend repo is committed locally with
-no remote configured yet.
+"Public job API and job-board frontend" subsection). The backend change is open as **PR #6**
+(https://github.com/Bantamlak12/remote-job-aggregator/pull/6), not yet merged; the frontend
+repo is committed locally with no remote configured yet — see Section 3.
 
 ## 2. Completed Work
 
@@ -583,8 +583,9 @@ administrative step there. **The job API + job-board frontend work is code-compl
 both-critics-ACCEPT**, but has two outstanding administrative steps, not development work:
 
 1. The backend change (`internal/job`, `internal/api`, `serve`, `docs/api.md`, and this
-   document's own updates) is committed on branch `Bantamlak21/frontend-dashboard-e451cddd`
-   in this worktree, not yet pushed or opened as a PR.
+   document's own updates) is pushed and open as **PR #6**
+   (https://github.com/Bantamlak12/remote-job-aggregator/pull/6, branch
+   `Bantamlak21/frontend-dashboard-e451cddd`), not yet merged.
 2. `remote-job-aggregator-web` is committed locally (branch `init`) with no remote —
    whether/where it gets one is Bantamlak's call, not assumed by this session.
 
@@ -908,16 +909,16 @@ because none of that code exists yet.
   Whether it gets a GitHub remote, and under which account/org, is explicitly Bantamlak's
   call, not assumed by either builder session. All work (13 commits on `init`) is safe
   locally in the meantime.
-- **The backend job-API change is committed but not yet pushed/PR'd** — see Section 3.
+- **The backend job-API change is open as PR #6, not yet merged** — see Section 3.
 
 ## 9. Exact Next Step
 
 **Three independent next steps — none blocks another:**
 
-1. **This session's own unfinished business, administrative only — the code itself is
-   done:** push the backend branch and open a PR (Section 3), and decide with Bantamlak what
-   happens to `remote-job-aggregator-web` — stays local, or gets a remote. Both critic passes
-   already returned ACCEPT and their findings are already fixed; nothing left to build here.
+1. **Administrative only — the code itself is done:** merge PR #6 (or address review
+   feedback if Bantamlak or another reviewer has any), and decide what happens to
+   `remote-job-aggregator-web` — stays local, or gets a remote. Both critic passes already
+   returned ACCEPT and their findings are already fixed; nothing left to build here.
 2. **External, needs Bantamlak:** obtain a real `SERPER_API_KEY` (free, no card — see
    Section 8) and run `search-discover` end to end against the real Serper API — see
    Section 8's `internal/search` known-issue entry for exactly what that verification should
@@ -955,12 +956,12 @@ a real employer's board.
 2. Read `CLAUDE.md` at the repo root (gitignored — present locally, not on GitHub; if it's
    missing, ask Bantamlak for a copy before proceeding, since it carries the authoritative
    project requirements and the mandatory branching/testing/review workflow).
-3. PR #3, #4, and #5 are all merged to `main` as of this document. Check whether the job
-   API's own PR (branch `Bantamlak21/frontend-dashboard-e451cddd` at the time of writing,
-   not yet opened — see Section 3) has since been opened/merged; if merged, this document's
-   Section 2/3 framing is stale, update it rather than trusting it. Also check: whether a real
-   `SERPER_API_KEY` has been provided (Section 8's `internal/search` entry needs its
-   live-verification follow-up actually performed if so), and whether
+3. PR #3, #4, and #5 are all merged to `main` as of this document. Check whether **PR #6**
+   (https://github.com/Bantamlak12/remote-job-aggregator/pull/6, the job API) has since
+   merged; if so, this document's Section 2/3 "open, not yet merged" framing is stale, update
+   it rather than trusting it. Also check: whether a real `SERPER_API_KEY` has been provided
+   (Section 8's `internal/search` entry needs its live-verification follow-up actually
+   performed if so), and whether
    `/home/bantamlak/my-repos/remote-job-aggregator-web` has since gotten a remote/been pushed
    anywhere (Section 8 notes it had neither as of this writing).
 4. Run the verification commands in [Section 7](#7-testing-and-verification-status) to
