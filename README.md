@@ -248,10 +248,10 @@ partial-success-exits-0 policy as `discover`.
 
 Searches run sequentially, not concurrently: Serper's free tier is a
 fixed pool of query credits, not a throughput problem worth a worker
-pool over. `configs/company_names.txt` ships with two names
-(`internal/company`'s Phase 2 examples) that are not yet verified through
-this specific command — that needs a real API key this environment
-doesn't have; verify them yourself once you've set credentials up.
+pool over. `configs/company_names.txt` ships with six names, all
+live-verified through this exact command against the real Serper API
+and a real Postgres database (0 failures) — add more names freely; a
+default, no-argument run only searches this one file.
 
 ## Job API
 

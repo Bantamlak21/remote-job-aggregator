@@ -383,10 +383,14 @@ be loaded or no board is found for any of them. Tests:
 `TestRunSearchDiscover_RejectsTooManyArgs`, `_RequiresSearchCredentials`,
 `_MissingNamesFileFailsBeforeTouchingTheDatabase`.
 
-**`configs/company_names.txt`** (new) — two example names (Spotify, Airbnb), explicitly
-documented in the file's own header comment as **unverified against the real search API**
-(unlike `configs/seed_companies.json`'s live-verified examples) — no Serper API credentials
-exist in this environment to run them for real.
+**`configs/company_names.txt`** (new) — originally shipped with two unverified example names
+(Spotify, Airbnb); **updated 2026-09-23, after real `SERPER_API_KEY` credentials arrived**,
+to six names (Spotify, Airbnb, GitLab, Notion, Discord, Figma), all live-verified by running
+`search-discover` for real against the real Serper API and a real Postgres database — 6/6
+found and persisted, 0 failures. See the "Search-discover live-verified" entry below for the
+run this session that surfaced why this file mattered (Bantamlak's report that "search only
+gets Spotify and Airbnb" — correct behavior given the file's old two-name contents, not a
+bug in `search-discover` itself, which was live-confirmed working).
 
 **Review process.** Two rounds of independent adversarial critic review, following
 CLAUDE.md's fan-out + harsh-critic loop for large work. Round 1 (REJECT): found the two
@@ -876,26 +880,25 @@ because none of that code exists yet.
   the shipped example will start failing `discover` (gracefully — it logs and skips, doesn't
   crash) even though nothing in this repo is wrong. Worth a periodic manual re-check, not
   worth building automation around yet.
-- **`internal/search` has never been run against the real google.serper.dev endpoint.** No
-  `SERPER_API_KEY` exists in this environment — get one from Bantamlak (sign up at
-  https://serper.dev/, no card required, 2,500 free queries; copy the key from
-  https://serper.dev/api-keys — see `.env.example` and README.md's Discovery section).
-  Everything in this session was verified against fake `httptest` servers; the request/
-  response/error shapes `serper.go` assumes are backed by Serper's own landing page plus two
-  independent real-world error reports found via research, not a live call this session made
-  itself. **Next session with real credentials should run `search-discover` end to end**
-  (e.g. against `configs/company_names.txt`'s two example names) and confirm: the header-based
-  auth is actually accepted by the real endpoint, the `organic[].{title,link,snippet}`
-  response shape matches `apiResponse`'s assumptions, and the `{"message","statusCode"}` error
-  shape is what a real bad-key or malformed-query request actually returns.
+- **RESOLVED 2026-09-23**: `internal/search` has now been run against the real
+  `google.serper.dev` endpoint — Bantamlak provided a real `SERPER_API_KEY`. Ran
+  `search-discover` end to end (real Postgres, real network) twice: once against 4 new names
+  (GitLab, Notion, Discord, Figma) and once against the updated 6-name default
+  `configs/company_names.txt` (adds those 4 to Spotify/Airbnb) — 6/6 found and persisted,
+  0 failures both times. Confirmed live: header-based auth is accepted by the real endpoint,
+  the `organic[].{title,link,snippet}` response shape matches `apiResponse`'s assumptions
+  exactly. The `{"message","statusCode"}` error shape (400/401/403) was *not* re-confirmed
+  this run — every one of the 6 names succeeded, so no error path was actually exercised
+  live; that specific sub-claim is still resting on the research-backed assumption from when
+  `serper.go` was written, not a fresh live observation. This entry prompted by Bantamlak
+  reporting "search only gets Spotify and Airbnb" — the actual cause was
+  `configs/company_names.txt` still only containing those two names, not a defect in
+  `search-discover` itself (which this live run confirms works correctly).
 - **A hardcoded, live Serper API key was found in a draft file during this session and
   flagged for immediate rotation** (not committed to git, and confirmed absent from this
   repository by direct grep before this document was written) — mentioned here so the
   rotation isn't forgotten if it hasn't happened yet. See Section 2's "Search-based discovery"
   subsection.
-- **`configs/company_names.txt`'s two example names (Spotify, Airbnb) are unverified against
-  the real search API**, unlike `configs/seed_companies.json`'s live-verified examples — see
-  above. The file's own header comment says so.
 - **The job API's data is entirely mock/illustrative.** `internal/job.MockRepository`'s 12
   fixture jobs are not real postings — real `application_url` domains, synthetic titles and
   descriptions. This is by design (Phase 3 hasn't shipped real ingestion) and documented in
@@ -913,17 +916,15 @@ because none of that code exists yet.
 
 ## 9. Exact Next Step
 
-**Three independent next steps — none blocks another:**
+**Two independent next steps — neither blocks the other:**
 
 1. **Administrative only — the code itself is done:** merge PR #6 (or address review
    feedback if Bantamlak or another reviewer has any), and decide what happens to
    `remote-job-aggregator-web` — stays local, or gets a remote. Both critic passes already
    returned ACCEPT and their findings are already fixed; nothing left to build here.
-2. **External, needs Bantamlak:** obtain a real `SERPER_API_KEY` (free, no card — see
-   Section 8) and run `search-discover` end to end against the real Serper API — see
-   Section 8's `internal/search` known-issue entry for exactly what that verification should
-   check. Independent of everything else; can happen whenever a key becomes available.
-3. **Development, no external dependency: start Phase 3** — build the `internal/ats`
+   `SERPER_API_KEY` has since been provided and `search-discover` live-verified end to end
+   (Section 8) — that external dependency this section used to list is now closed.
+2. **Development, no external dependency: start Phase 3** — build the `internal/ats`
    package with a Greenhouse client, and extend `internal/job` with a real Postgres-backed
    `Repository` implementation (the type/interface already exist; Phase 3 adds the second
    implementation, not a new package) over the existing `jobs` table.
