@@ -678,6 +678,23 @@ discovery mechanism, not a new phase.
   provider without rework.
 - **Verification:** same fake-server pattern as Greenhouse.
 
+### Deferred — automatic company discovery (explicitly, not a current phase)
+
+**Not scheduled, deliberately deferred by Bantamlak until after Phases 3–7 ship
+(2026-09-23).** `search-discover` only *resolves* a company name you already give it (via
+`configs/company_names.txt`) to a real ATS board URL — it does not discover which companies
+exist. Bantamlak initially expected the latter and was told plainly it isn't built; his
+decision was to implement it later, after the rest of the roadmap, not now.
+
+What this would actually require, if picked up later — not designed yet, just named so the
+scope isn't lost: a query strategy that surfaces real companies rather than one already-named
+company (e.g. searching for something like `site:boards.greenhouse.io "remote"` and parsing
+company names out of result URLs/titles, or a fundamentally different query shape); dedup
+against companies already in `companies`/`target_companies`; and a rate-limit-aware design
+given Serper's free tier is a fixed pool of query credits, not a per-day renewing budget —
+an open-ended discovery loop could burn that pool fast without a hard cap. Needs its own
+Confusion-Protocol-style scoping conversation before building, not a quick bolt-on.
+
 ## 5. Current Database State
 
 **Migrations:** one — `000001_init_schema` (up + down), applied and clean
