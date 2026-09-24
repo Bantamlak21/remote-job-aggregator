@@ -149,6 +149,11 @@ ceiling on the code:
   Gebeya, DreamTech (their careers pages showed no job links to the crawler). Adding a
   `career_pages` entry is one line once one is confirmed to work.
 
+Note: `priority-report` and the `priority coverage` log line count every job that is `open` in
+the database and are **not** filtered by `JOB_MAX_AGE_DAYS`, so they can be higher than what
+the API and UI show (a company can list "1 open" while its only job is older than the limit).
+They measure ingestion coverage, not what a visitor sees.
+
 The number to watch is the `priority coverage` log line and `priority-report`; if it drops
 after a run, look at `target not ingested` warnings first.
 

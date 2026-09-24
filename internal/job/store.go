@@ -60,6 +60,31 @@ var ErrJobTargetMismatch = errors.New("job: already registered to a different ta
 // PostgreSQL instance.
 type Store struct {
 	pool *pgxpool.Pool
+	// maxAge, when positive, hides jobs posted longer ago than this from
+	// List and Get (see WithMaxAge).
+	maxAge time.Duration
+}
+
+// WithMaxAge returns a copy of the Store whose public reads (List, Get)
+// hide jobs whose posting date, COALESCE(published_at, first_seen_at), is
+// older than maxAge. Zero or negative means no limit. Only reads are
+// affected: ingestion keeps upserting and closing old rows as usual, and a
+// hidden job is still 'open' in the table (raising the limit shows it
+// again). Age is measured by Postgres's clock, the same one that stamps
+// first_seen_at, so app/db clock skew cannot hide a fresh job.
+func (s *Store) WithMaxAge(maxAge time.Duration) *Store {
+	c := *s
+	c.maxAge = max(maxAge, 0)
+	return &c
+}
+
+// maxAgeClause is the SQL condition for the age limit, or "" when there is
+// none. It refers to the jobs alias j; arg registers the bound seconds.
+func (s *Store) maxAgeClause(arg func(any) string) string {
+	if s.maxAge <= 0 {
+		return ""
+	}
+	return " AND COALESCE(j.published_at, j.first_seen_at) >= now() - make_interval(secs => " + arg(s.maxAge.Seconds()) + ")"
 }
 
 // NewStore returns a Store backed by pool. The pool is owned by the
@@ -340,6 +365,7 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 	if filter.PriorityOnly {
 		where += " AND c.is_priority"
 	}
+	where += s.maxAgeClause(arg)
 	if q := strings.TrimSpace(filter.Query); q != "" {
 		// Escaped so "%" and "_" in the user's text match literally,
 		// not as wildcards (docs/api.md promises a substring match).
@@ -428,7 +454,14 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		locationRaw    *string
 		description    *string
 	)
-	err = s.pool.QueryRow(ctx, getJobByIDQuery, numericID).Scan(
+	query, args := getJobByIDQuery, []any{numericID}
+	if s.maxAge > 0 {
+		query += s.maxAgeClause(func(v any) string {
+			args = append(args, v)
+			return fmt.Sprintf("$%d", len(args))
+		})
+	}
+	err = s.pool.QueryRow(ctx, query, args...).Scan(
 		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &description,
 	)

@@ -753,6 +753,12 @@ measured results:** [docs/priority-companies.md](docs/priority-companies.md). Su
   until `seed-priority` is re-run; a careers page with zero job links is an error (so a
   company's last removed posting lingers until someone looks); search returns 10 results per
   query; `nameKey` drops `Ethiopia`/`Co`/`PLC` suffixes.
+- **Later changes (2026-09-24, Bantamlak's requests):** LinkedIn jobs are dated from their job
+  id, not Google's crawl date (PR #11); the list is sorted by recency only, no pinning
+  (PR #12); and the API hides every job posted more than `JOB_MAX_AGE_DAYS` (default 15) days
+  ago, for all sources, in list, total and detail (`job.Store.WithMaxAge`; rows stay in the
+  database; the mock repository is not filtered). On the dev database that keeps 109 of 575
+  Greenhouse jobs and all 6 search jobs; raise or zero the variable to show more.
 
 ## 3. Work In Progress
 

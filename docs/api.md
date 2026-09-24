@@ -23,6 +23,13 @@ be removed — some jobs may stay genuinely unknown even after classification ru
 raw location string too ambiguous to classify confidently), so `unknown` is a real,
 permanent value, not a temporary one.
 
+**Job age limit.** Jobs whose posting date (`posted_at`) is more than `JOB_MAX_AGE_DAYS` days ago
+(default 15, `0` = no limit) are not returned by either endpoint: they are missing from
+`GET /api/v1/jobs` (and from `total`) and `GET /api/v1/jobs/{id}` answers `404` for them. The
+rows stay in the database, so raising the limit shows them again. A job with no publish date
+counts from the day it was first seen. The mock repository (`JOB_REPOSITORY=mock`) does not apply
+the limit.
+
 **Priority companies.** Jobs from the curated Ethiopian tech companies
 (`configs/ethiopian_companies.json`, see `docs/priority-companies.md`) carry
 `"is_priority": true`. They get no special position: `GET /api/v1/jobs` is always sorted

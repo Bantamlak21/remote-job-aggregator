@@ -121,6 +121,7 @@ raw credential even when the value itself was the problem.
 | `API_ADDR` | no | `:8080` | only for `serve`; must be a valid `host:port` |
 | `CORS_ALLOWED_ORIGIN` | no | `http://localhost:5173` | only for `serve`; a single explicit origin, never `*` |
 | `JOB_REPOSITORY` | no | `postgres` | only for `serve`; `postgres` (real ingested jobs) or `mock` (12 fixture jobs, no database) |
+| `JOB_MAX_AGE_DAYS` | no | `15` | only for `serve` (postgres repository); jobs posted longer ago than this are hidden from the list and detail (`0` = no limit); 0 – 3650. The rows stay in the database |
 | `INGESTION_WORKERS` | no | `5` | bounded concurrency for `ingest` (one ATS board per worker); 1 – 100 |
 | `INGESTION_MAX_RESPONSE_SIZE` | no | `33554432` (32 MiB) | bytes; `ingest`'s own response cap, separate from `HTTP_MAX_RESPONSE_SIZE` because big boards exceed 5 MiB (databricks: 9.7 MB); must be positive |
 | `INGESTION_HTTP_TIMEOUT` | no | `30s` | whole-round-trip budget for `ingest`'s HTTP client; must be positive |

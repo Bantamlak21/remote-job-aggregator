@@ -415,8 +415,8 @@ func newJobRepository(ctx context.Context, cfg *config.Config, logger *slog.Logg
 	if err != nil {
 		return nil, nil, fmt.Errorf("connecting to database: %w", err)
 	}
-	logger.Info("serving jobs from postgres", "job_repository", cfg.API.JobRepository)
-	return job.NewStore(db.Pool), db.Close, nil
+	logger.Info("serving jobs from postgres", "job_repository", cfg.API.JobRepository, "job_max_age", cfg.API.JobMaxAge)
+	return job.NewStore(db.Pool).WithMaxAge(cfg.API.JobMaxAge), db.Close, nil
 }
 
 // runServe starts the public, read-only job API (see docs/api.md).

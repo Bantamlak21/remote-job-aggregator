@@ -150,6 +150,11 @@ type APIConfig struct {
 	// required, useful for frontend development against guaranteed
 	// non-empty data before any real ingestion has run).
 	JobRepository string
+	// JobMaxAge hides jobs whose posting date is older than this from the
+	// public API (list and detail). Zero disables the limit. The rows stay
+	// in the database; only what the API serves changes. Applies to the
+	// postgres repository only (the mock's fixtures are illustrative).
+	JobMaxAge time.Duration
 }
 
 const (
@@ -384,6 +389,13 @@ func Load() (*Config, error) {
 		errs = append(errs, errors.New("CORS_ALLOWED_ORIGIN must not be blank"))
 	}
 
+	jobMaxAgeDays, err := getEnvInt("JOB_MAX_AGE_DAYS", 15)
+	if err != nil {
+		errs = append(errs, err)
+	} else if jobMaxAgeDays < 0 || jobMaxAgeDays > 3650 {
+		errs = append(errs, fmt.Errorf("JOB_MAX_AGE_DAYS must be between 0 (no limit) and 3650, got %d", jobMaxAgeDays))
+	}
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
@@ -427,6 +439,7 @@ func Load() (*Config, error) {
 			Addr:              apiAddr,
 			CORSAllowedOrigin: corsAllowedOrigin,
 			JobRepository:     jobRepository,
+			JobMaxAge:         time.Duration(jobMaxAgeDays) * 24 * time.Hour,
 		},
 	}, nil
 }
