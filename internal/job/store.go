@@ -361,13 +361,14 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 		return ListResult{Total: total}, nil
 	}
 
-	// Priority companies' jobs are pinned above everything else, so the
-	// flag is the first sort key; newest-first only orders within each
-	// group. posted_at is the COALESCE(...) column alias from
-	// jobColumnsForAPI; referencing it by alias in ORDER BY (rather than
-	// repeating the COALESCE expression) is standard Postgres.
+	// Strictly newest-first. Priority (Ethiopian) companies are badged and
+	// filterable but deliberately NOT sorted above other jobs: an earlier
+	// version pinned them first, and Bantamlak asked for recency instead.
+	// posted_at is the COALESCE(...) column alias from jobColumnsForAPI;
+	// referencing it by alias in ORDER BY (rather than repeating the
+	// COALESCE expression) is standard Postgres.
 	query := `SELECT ` + jobColumnsForAPI + `, count(*) OVER() AS total` + fromClause + where +
-		" ORDER BY c.is_priority DESC, posted_at DESC, j.id DESC" +
+		" ORDER BY posted_at DESC, j.id DESC" +
 		" LIMIT " + arg(pageSize) + " OFFSET " + arg((page-1)*pageSize)
 
 	rows, err := s.pool.Query(ctx, query, args...)

@@ -42,8 +42,9 @@ type Company struct {
 	Website     string
 	Description string
 	Status      Status
-	// IsPriority marks an employer whose jobs the board pins first and
-	// badges (the curated Ethiopian companies list). Set only through
+	// IsPriority marks an employer whose jobs the board badges and can
+	// filter to (the curated Ethiopian companies list); it does not affect
+	// sort order, which is by recency only. Set only through
 	// SetPriority, never through Upsert: discovery re-finding a company
 	// by name must not be able to flip it.
 	IsPriority bool

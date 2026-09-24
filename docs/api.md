@@ -25,10 +25,10 @@ permanent value, not a temporary one.
 
 **Priority companies.** Jobs from the curated Ethiopian tech companies
 (`configs/ethiopian_companies.json`, see `docs/priority-companies.md`) carry
-`"is_priority": true` and are pinned above every other job in `GET /api/v1/jobs`, on every
-page, regardless of `posted_at`; within each group the order is newest first. `priority=true`
-narrows a list to just those companies. Additive change: existing consumers that ignore the
-new field and parameter see the same shapes as before.
+`"is_priority": true`. They get no special position: `GET /api/v1/jobs` is always sorted
+newest first by `posted_at` (ties by id), whatever the company, and a priority job's age decides
+where it lands. `priority=true` narrows a list to just those companies. Additive change:
+existing consumers that ignore the new field and parameter see the same shapes as before.
 
 Base URL (dev): `http://localhost:8080/api/v1`
 

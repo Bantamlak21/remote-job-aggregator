@@ -1,15 +1,16 @@
 # Priority companies (Ethiopian tech)
 
-Jobs from 25 curated Ethiopian tech companies are pinned above every other job on the board,
-badged "Ethiopian company", and can be shown alone with a filter. This page says how those
-jobs are found, what is checked before a job is trusted, what coverage to expect, and how to
-run and change it.
+Jobs from 25 curated Ethiopian tech companies are on the board, badged "Ethiopian company",
+and can be shown alone with a filter. They are sorted like every other job, by recency only
+(an earlier version pinned them above everything else; that was changed on request).
+
+This page says how their jobs are found, what is checked before a job is trusted, what
+coverage to expect, and how to run and change it.
 
 ## What the user sees
 
-- `GET /api/v1/jobs` returns priority jobs first, on every page, regardless of date (newest
-  first inside each group). Each job carries `is_priority`. `?priority=true` returns only
-  priority jobs. Contract: [api.md](api.md).
+- `GET /api/v1/jobs` is sorted newest first, priority or not. Each job carries `is_priority`.
+  `?priority=true` returns only priority jobs. Contract: [api.md](api.md).
 - The web UI (`remote-job-aggregator-web`) shows an "Ethiopian company" badge, a violet card
   outline, and an "Ethiopian companies only" toggle next to the other filters.
 
@@ -107,8 +108,8 @@ live while building this (2026-09-24):
 - **Ended jobs close at once.** When a search result or an Ethiojobs page says a job has ended
   (`status: closed`, past expiry, "No longer accepting applications"), ingestion closes any
   stored copy immediately rather than waiting out the 21-day window.
-- **Future publish dates are ignored** (more than 24 h ahead of now): a source bug must not pin
-  a job above every real one.
+- **Future publish dates are ignored** (more than 24 h ahead of now): a source bug must not
+  sort a job above every real one.
 
 ## Running it
 

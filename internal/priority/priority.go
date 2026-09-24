@@ -1,5 +1,5 @@
 // Package priority owns the curated list of priority companies (the
-// Ethiopian tech companies whose jobs the board pins first): loading the
+// Ethiopian tech companies whose jobs the board badges and can filter to): loading the
 // list from configs/ethiopian_companies.json, registering each company and
 // the places its jobs come from, and reporting how well those sources
 // cover the list.

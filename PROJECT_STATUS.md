@@ -710,11 +710,13 @@ are reliably ints). The optional single-404 debounce is unbuilt (Section 8).
 ### Ethiopian priority companies (between Phase 3 and Phase 4; branch `Bantamlak21/ethiopian-priority-e451cddd`)
 
 **Request:** the jobs of 25 Ethiopian tech companies (Bantamlak's list, `configs/ethiopian_companies.json`)
-must be on the board, pinned first, badged, with a filter. **Design and measured results:**
-[docs/priority-companies.md](docs/priority-companies.md). Summary:
+must be on the board, badged, with a filter. (First built pinned above every other job;
+changed 2026-09-24 at Bantamlak's request to plain recency order, see below.) **Design and
+measured results:** [docs/priority-companies.md](docs/priority-companies.md). Summary:
 
 - **Schema/API/UI:** migration `000002` adds `companies.is_priority`; `job.Store.List` orders
-  `is_priority DESC, posted_at DESC, id DESC` (pin holds across pages; real-Postgres tests);
+  strictly `posted_at DESC, id DESC` (priority jobs get no special position; real-Postgres
+  tests with interleaved companies, across pages);
   `is_priority` on list and detail; `?priority=true` filter (`false` = no filter, anything else
   400); frontend (`remote-job-aggregator-web`) badge, violet card outline and "Ethiopian
   companies only" toggle, 43 tests.

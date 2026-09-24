@@ -293,8 +293,9 @@ dev server), never a wildcard.
 
 ## Priority companies (Ethiopian tech)
 
-Jobs from 25 curated Ethiopian tech companies are pinned above every other job and badged
-"Ethiopian company" (`is_priority` in the API; `?priority=true` narrows a list to them).
+Jobs from 25 curated Ethiopian tech companies are badged "Ethiopian company" (`is_priority`
+in the API; `?priority=true` narrows a list to them). They sort like every other job, newest
+first.
 The list lives in `configs/ethiopian_companies.json`; how their jobs are found, what each
 source checks before it trusts a result, and the measured coverage are in
 [docs/priority-companies.md](docs/priority-companies.md).

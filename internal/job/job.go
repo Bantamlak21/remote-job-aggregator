@@ -81,8 +81,8 @@ type Job struct {
 	CompanyName    string
 	CompanyLogoURL string // empty means the API serves JSON null
 	// IsPriority is true for jobs from a curated priority company (the
-	// Ethiopian tech companies list): List pins them first and the UI
-	// badges them.
+	// Ethiopian tech companies list): the UI badges them and List can
+	// filter to them. It does not change sort order (recency only).
 	IsPriority     bool
 	RemoteType     RemoteType
 	EmploymentType EmploymentType

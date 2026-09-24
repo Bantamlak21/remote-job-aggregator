@@ -9,9 +9,13 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/database"
 )
 
-// seedPriorityJobs creates one priority company ("Kifiya") with two OLD
-// jobs and one regular company ("Acme") with two NEW jobs, so any order
-// that is not "priority first" is visibly a date order instead.
+// seedPriorityJobs creates a priority company ("Kifiya") and a regular one
+// ("Acme") whose jobs INTERLEAVE in time, newest first:
+//
+//	a-new-1 (Acme, Sep 22) > k-new-1 (Kifiya, Sep 20) > a-mid-1 (Acme, Sep 10) > k-old-1 (Kifiya, Jan 1)
+//
+// so a list sorted by recency alternates companies, and any grouping by
+// priority is visible as a break in that order.
 func seedPriorityJobs(t *testing.T, ctx context.Context, db *database.DB) *Store {
 	t.Helper()
 	store := NewStore(db.Pool)
@@ -22,13 +26,11 @@ func seedPriorityJobs(t *testing.T, ctx context.Context, db *database.DB) *Store
 	}
 	acmeTarget, acmeCompany := seedTarget(t, ctx, db, "Acme", "acme")
 
-	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	recent := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	for _, r := range []Record{
-		withPublished(baseRecord(kifiyaTarget, kifiyaCompany, "k-old-1"), old),
-		withPublished(baseRecord(kifiyaTarget, kifiyaCompany, "k-old-2"), old.Add(time.Hour)),
-		withPublished(baseRecord(acmeTarget, acmeCompany, "a-new-1"), recent),
-		withPublished(baseRecord(acmeTarget, acmeCompany, "a-new-2"), recent.Add(time.Hour)),
+		withPublished(baseRecord(kifiyaTarget, kifiyaCompany, "k-old-1"), time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		withPublished(baseRecord(kifiyaTarget, kifiyaCompany, "k-new-1"), time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)),
+		withPublished(baseRecord(acmeTarget, acmeCompany, "a-mid-1"), time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)),
+		withPublished(baseRecord(acmeTarget, acmeCompany, "a-new-1"), time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)),
 	} {
 		if _, err := store.UpsertFromATS(ctx, r); err != nil {
 			t.Fatalf("seeding %s failed: %v", r.SourceJobID, err)
@@ -42,7 +44,10 @@ func withPublished(r Record, at time.Time) Record {
 	return r
 }
 
-func TestStoreList_PinsPriorityCompaniesFirst(t *testing.T) {
+// Strictly recency: a priority company's job gets no position of its own.
+// The newest job overall is Acme's (regular), and the priority company's
+// OLD job comes last, below a regular job that is newer than it.
+func TestStoreList_SortsByRecencyRegardlessOfPriority(t *testing.T) {
 	db := newDB(t)
 	ctx := context.Background()
 	store := seedPriorityJobs(t, ctx, db)
@@ -54,27 +59,71 @@ func TestStoreList_PinsPriorityCompaniesFirst(t *testing.T) {
 	if res.Total != 4 || len(res.Jobs) != 4 {
 		t.Fatalf("List() total=%d len=%d, want 4/4", res.Total, len(res.Jobs))
 	}
-	wantCompanies := []string{"Kifiya", "Kifiya", "Acme", "Acme"}
-	wantPriority := []bool{true, true, false, false}
+	wantCompanies := []string{"Acme", "Kifiya", "Acme", "Kifiya"}
+	wantPriority := []bool{false, true, false, true}
 	for i, j := range res.Jobs {
 		if j.CompanyName != wantCompanies[i] || j.IsPriority != wantPriority[i] {
-			t.Errorf("job[%d] = %s priority=%t, want %s priority=%t (priority pinned first, older or not)",
+			t.Errorf("job[%d] = %s priority=%t, want %s priority=%t (pure newest-first)",
 				i, j.CompanyName, j.IsPriority, wantCompanies[i], wantPriority[i])
 		}
 	}
-	// Within the priority group: newest first.
-	if !res.Jobs[0].PostedAt.After(res.Jobs[1].PostedAt) {
-		t.Errorf("priority group not newest-first: %v then %v", res.Jobs[0].PostedAt, res.Jobs[1].PostedAt)
-	}
-	// Within the regular group: newest first.
-	if !res.Jobs[2].PostedAt.After(res.Jobs[3].PostedAt) {
-		t.Errorf("regular group not newest-first: %v then %v", res.Jobs[2].PostedAt, res.Jobs[3].PostedAt)
+	for i := 1; i < len(res.Jobs); i++ {
+		if res.Jobs[i-1].PostedAt.Before(res.Jobs[i].PostedAt) {
+			t.Errorf("job[%d] (%v) is older than job[%d] (%v); list is not newest-first",
+				i-1, res.Jobs[i-1].PostedAt, i, res.Jobs[i].PostedAt)
+		}
 	}
 }
 
-// The pin must hold across page boundaries: page 1 of size 2 is exactly
-// the priority group, page 2 the rest, with a stable total.
-func TestStoreList_PriorityPinHoldsAcrossPages(t *testing.T) {
+// Equal publish dates are ordered by id descending (newest row first), so
+// the order is deterministic and pagination cannot skip or repeat a job.
+// Jobs from a priority and a regular company tie here on purpose.
+func TestStoreList_EqualDatesAreOrderedByIDDescending(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	store := NewStore(db.Pool)
+
+	kifiyaTarget, kifiyaCompany := seedTarget(t, ctx, db, "Kifiya", "kifiya")
+	if err := company.NewStore(db.Pool).SetPriority(ctx, kifiyaCompany, true); err != nil {
+		t.Fatalf("SetPriority() failed: %v", err)
+	}
+	acmeTarget, acmeCompany := seedTarget(t, ctx, db, "Acme", "acme")
+
+	same := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	// Insert order (= id order): first, second, third. The priority job is in the middle.
+	for _, r := range []Record{
+		withPublished(baseRecord(acmeTarget, acmeCompany, "first"), same),
+		withPublished(baseRecord(kifiyaTarget, kifiyaCompany, "second"), same),
+		withPublished(baseRecord(acmeTarget, acmeCompany, "third"), same),
+	} {
+		if _, err := store.UpsertFromATS(ctx, r); err != nil {
+			t.Fatalf("seeding %s failed: %v", r.SourceJobID, err)
+		}
+	}
+
+	var got []string
+	for page := 1; page <= 3; page++ { // one per page: also proves pagination is stable
+		res, err := store.List(ctx, Filter{Page: page, PageSize: 1})
+		if err != nil {
+			t.Fatalf("List() page %d failed: %v", page, err)
+		}
+		if len(res.Jobs) != 1 {
+			t.Fatalf("page %d has %d jobs, want 1", page, len(res.Jobs))
+		}
+		got = append(got, res.Jobs[0].ID)
+	}
+	want := []string{
+		mustJobID(t, ctx, db, "third"), mustJobID(t, ctx, db, "second"), mustJobID(t, ctx, db, "first"),
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ids by page = %v, want %v (highest id first; priority gets no position)", got, want)
+		}
+	}
+}
+
+// The recency order holds across page boundaries.
+func TestStoreList_RecencyOrderHoldsAcrossPages(t *testing.T) {
 	db := newDB(t)
 	ctx := context.Background()
 	store := seedPriorityJobs(t, ctx, db)
@@ -93,12 +142,13 @@ func TestStoreList_PriorityPinHoldsAcrossPages(t *testing.T) {
 	if len(page1.Jobs) != 3 || len(page2.Jobs) != 1 {
 		t.Fatalf("page sizes = %d, %d, want 3, 1", len(page1.Jobs), len(page2.Jobs))
 	}
-	if !page1.Jobs[0].IsPriority || !page1.Jobs[1].IsPriority || page1.Jobs[2].IsPriority {
-		t.Errorf("page 1 priority flags = %t %t %t, want true true false",
-			page1.Jobs[0].IsPriority, page1.Jobs[1].IsPriority, page1.Jobs[2].IsPriority)
+	if page1.Jobs[0].CompanyName != "Acme" || page1.Jobs[1].CompanyName != "Kifiya" || page1.Jobs[2].CompanyName != "Acme" {
+		t.Errorf("page 1 companies = %s %s %s, want Acme Kifiya Acme",
+			page1.Jobs[0].CompanyName, page1.Jobs[1].CompanyName, page1.Jobs[2].CompanyName)
 	}
-	if page2.Jobs[0].IsPriority {
-		t.Errorf("page 2 job is priority; every priority job must already be on page 1")
+	if page2.Jobs[0].CompanyName != "Kifiya" || !page2.Jobs[0].IsPriority {
+		t.Errorf("page 2 job = %s priority=%t, want Kifiya's old job (still badged, just old)",
+			page2.Jobs[0].CompanyName, page2.Jobs[0].IsPriority)
 	}
 }
 
@@ -310,7 +360,7 @@ func TestStoreCloseStale_RejectsNonPositiveWindow(t *testing.T) {
 	}
 }
 
-func TestMockRepository_PinsAndFiltersPriority(t *testing.T) {
+func TestMockRepository_SortsByRecencyAndFiltersPriority(t *testing.T) {
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	m := &MockRepository{jobs: []Job{
 		{ID: "1", Title: "New regular", CompanyName: "Acme", PostedAt: base.Add(48 * time.Hour)},
@@ -322,11 +372,9 @@ func TestMockRepository_PinsAndFiltersPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() failed: %v", err)
 	}
-	if got := all.Jobs[0].ID; got != "2" {
-		t.Errorf("first job = %s, want the priority job 2 pinned above newer regular jobs", got)
-	}
-	if all.Jobs[1].ID != "1" || all.Jobs[2].ID != "3" {
-		t.Errorf("regular jobs order = %s, %s, want 1, 3 (newest first)", all.Jobs[1].ID, all.Jobs[2].ID)
+	if all.Jobs[0].ID != "1" || all.Jobs[1].ID != "3" || all.Jobs[2].ID != "2" {
+		t.Errorf("order = %s, %s, %s, want 1, 3, 2 (pure newest-first: the old priority job is last)",
+			all.Jobs[0].ID, all.Jobs[1].ID, all.Jobs[2].ID)
 	}
 
 	only, err := m.List(context.Background(), Filter{PriorityOnly: true})

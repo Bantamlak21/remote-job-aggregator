@@ -57,16 +57,13 @@ func (m *MockRepository) List(ctx context.Context, filter Filter) (ListResult, e
 		matched = append(matched, j)
 	}
 
-	// Same order Store.List uses: priority jobs pinned first, then
-	// newest-first, then id.
+	// Same order Store.List uses: newest-first, then id. Priority jobs get
+	// no special position.
 	sort.SliceStable(matched, func(i, k int) bool {
-		if matched[i].IsPriority != matched[k].IsPriority {
-			return matched[i].IsPriority
-		}
 		if !matched[i].PostedAt.Equal(matched[k].PostedAt) {
 			return matched[i].PostedAt.After(matched[k].PostedAt)
 		}
-		return matched[i].ID < matched[k].ID
+		return matched[i].ID > matched[k].ID
 	})
 
 	total := len(matched)
