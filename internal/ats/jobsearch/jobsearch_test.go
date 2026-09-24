@@ -2,9 +2,7 @@ package jobsearch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -14,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 )
 
@@ -65,29 +62,8 @@ func (f *fakeSearcher) SearchRecent(_ context.Context, q string, r search.Recenc
 	return nil, nil
 }
 
-type fakePages struct {
-	mu      sync.Mutex
-	html    map[string]string
-	errs    map[string]error
-	fetched []string
-}
-
-func (f *fakePages) Fetch(_ context.Context, rawURL string) (*page.Page, error) {
-	f.mu.Lock()
-	f.fetched = append(f.fetched, rawURL)
-	f.mu.Unlock()
-	if err := f.errs[rawURL]; err != nil {
-		return nil, err
-	}
-	body, ok := f.html[rawURL]
-	if !ok {
-		return nil, fmt.Errorf("fake: %s: %w", rawURL, page.ErrNotFound)
-	}
-	return page.Parse(rawURL, []byte(body))
-}
-
-func newClient(s Searcher, p Pages, budget int) *Client {
-	c := New(s, p, []Company{
+func newClient(s Searcher, budget int) *Client {
+	c := New(s, []Company{
 		{Name: "Chapa Financial Technologies", Aliases: []string{"Chapa"}},
 		{Name: "Gebeya Inc.", HiresOutsideEthiopia: true},
 		{Name: "DreamTech"},
@@ -96,7 +72,6 @@ func newClient(s Searcher, p Pages, budget int) *Client {
 	}, NewBudget(budget), discardLogger())
 	c.now = func() time.Time { return fixedNow }
 	c.retryDelay = 0
-	c.pagePause = 0
 	return c
 }
 
@@ -104,7 +79,7 @@ func newClient(s Searcher, p Pages, budget int) *Client {
 // name. It panics on an unknown name: a typo here would hand back an empty
 // match set, and every "must be rejected" test would then pass vacuously.
 func matchFor(name string) companyMatch {
-	m, ok := newClient(nil, nil, 1).companies[nameKey(name)]
+	m, ok := newClient(nil, 1).companies[nameKey(name)]
 	if !ok || len(m.keys) == 0 {
 		panic("matchFor: no fixture company named " + name)
 	}
@@ -124,30 +99,6 @@ func TestMatchFor_FixtureCompaniesAcceptTheirAliases(t *testing.T) {
 }
 
 // ---- name matching ----
-
-func TestNameKey(t *testing.T) {
-	cases := map[string]string{
-		"Ethswitch S.C.":                  "ethswitch",
-		"EthSwitch":                       "ethswitch",
-		"Kifiya Financial Technology PLC": "kifiya-financial-technology",
-		"Gebeya Inc.":                     "gebeya",
-		"Gebeya":                          "gebeya",
-		"Chaka Gebeya":                    "chaka-gebeya",
-		"Chapa De Indian Health":          "chapa-de-indian-health",
-		"Chapa":                           "chapa",
-		"4Africa Systems":                 "4africa-systems",
-		"251 Technologies":                "251-technologies",
-		"Ethiopia":                        "ethiopia", // never strip down to nothing
-		"PLC":                             "plc",
-		"":                                "",
-		"  Zare  Innovations  ":           "zare-innovations",
-	}
-	for in, want := range cases {
-		if got := nameKey(in); got != want {
-			t.Errorf("nameKey(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
 
 func TestSearchQuery(t *testing.T) {
 	cases := []struct {
@@ -318,6 +269,8 @@ func TestEthiopiaSignal(t *testing.T) {
 		{"in.linkedin.com", "Noida, Uttar Pradesh, India", "Apply for Finance Executive", "Finance Executive - LinkedIn India", false},
 		{"ke.linkedin.com", "Nairobi County, Kenya", "", "", false},
 		{"www.linkedin.com", "", "", "", false},
+		{"www.linkedin.com", "Addison, TX", "", "", false},
+		{"www.linkedin.com", "Nairobi", "Ethiopian Airlines hub", "", false},
 	}
 	for _, tc := range cases {
 		got := ethiopiaSignal(tc.host, tc.location, search.Result{Snippet: tc.snippet, Title: tc.title})
@@ -490,170 +443,50 @@ func TestPrettyTitle(t *testing.T) {
 	}
 }
 
-// ---- Ethiojobs ----
-
-func ejPage(status, published, expiry, company, title string) string {
-	data := map[string]any{"props": map[string]any{"pageProps": map[string]any{"data": map[string]any{
-		"title": title, "description": "<p>Build <b>things</b>.</p>", "requirement": "<ul><li>Go</li></ul>",
-		"how_to_apply": "<p>Email hr@example.et</p>", "status": status, "date_published": published,
-		"date_expiry": expiry, "city": "Addis Ababa", "state": "Addis Ababa",
-		"company": map[string]any{"name": company},
-	}}}}
-	b, _ := json.Marshal(data)
-	return `<html><head><title>x</title></head><body><script id="__NEXT_DATA__" type="application/json">` + string(b) + `</script></body></html>`
-}
-
-func TestEthiojobsJob_CurrentPostingIsAccepted(t *testing.T) {
-	m := matchFor("EthSwitch")
-	p, _ := page.Parse("https://ethiojobs.net/job/Ubd2cAJy92-senior-compliance-officer",
-		[]byte(ejPage("active", "2026-09-23T10:22:18.000000Z", "2026-09-30T23:59:59.000000Z", "Ethswitch S.C.", "Senior Compliance Officer Re- Advertised")))
-
-	job, reason := ethiojobsJob(p, "Ubd2cAJy92", p.URL, m, fixedNow)
-	if reason != "" {
-		t.Fatalf("rejected (%s), want accepted", reason)
-	}
-	if job.ExternalID != "ethiojobs:Ubd2cAJy92" || job.Title != "Senior Compliance Officer Re- Advertised" {
-		t.Errorf("job = %+v", job)
-	}
-	if job.LocationRaw != "Addis Ababa" {
-		t.Errorf("LocationRaw = %q, want the city/state without duplication", job.LocationRaw)
-	}
-	if !job.PublishedAt.Equal(time.Date(2026, 9, 23, 10, 22, 18, 0, time.UTC)) {
-		t.Errorf("PublishedAt = %v", job.PublishedAt)
-	}
-	for _, want := range []string{"Build things.", "Go", "hr@example.et"} {
-		if !strings.Contains(job.Description, want) {
-			t.Errorf("Description = %q, missing %q", job.Description, want)
-		}
-	}
-	if strings.Contains(job.Description, "<") {
-		t.Errorf("Description still has HTML: %q", job.Description)
-	}
-}
-
-func TestEthiojobsJob_Rejections(t *testing.T) {
-	m := matchFor("Kifiya Financial Technology")
-	const good, exp = "2026-09-20T00:00:00.000000Z", "2026-10-20T00:00:00.000000Z"
-	cases := []struct {
-		name string
-		html string
-		want string
-	}{
-		{"closed (real Kifiya posting from 2025)", ejPage("closed", "2025-08-13T12:31:42.000000Z", "2025-08-20T23:59:59.000000Z", "Kifiya Financial Technologies", "Credit Risk"), "CLOSED"},
-		{"closed status even with a future expiry", ejPage("closed", good, exp, "Kifiya Financial Technologies", "X"), "CLOSED"},
-		{"unknown status is not trusted", ejPage("draft", good, exp, "Kifiya Financial Technologies", "X"), "not-active"},
-		{"empty status", ejPage("", good, exp, "Kifiya Financial Technologies", "X"), "not-active"},
-		{"active but expired yesterday", ejPage("active", "2026-09-10T00:00:00Z", "2026-09-23T23:59:59Z", "Kifiya Financial Technologies", "X"), "CLOSED"},
-		{"active, expires exactly now", ejPage("active", good, "2026-09-24T12:00:00Z", "Kifiya Financial Technologies", "X"), "CLOSED"},
-		{"no expiry and old", ejPage("active", "2026-01-01T00:00:00Z", "", "Kifiya Financial Technologies", "X"), "no-expiry-and-old"},
-		{"no expiry and no publish date", ejPage("active", "", "", "Kifiya Financial Technologies", "X"), "no-expiry-and-old"},
-		{"another company on the same site", ejPage("active", good, exp, "Qena Software Design & Development PLC", "X"), "other-company"},
-		{"company name only similar", ejPage("active", good, exp, "Kifiya Bank", "X"), "other-company"},
-		{"blank title", ejPage("active", good, exp, "Kifiya Financial Technologies", "   "), "no-title"},
-		{"no embedded data", `<html><body>Hello</body></html>`, "no-data"},
-		{"embedded data is not JSON", `<script id="__NEXT_DATA__">{oops</script>`, "bad-data"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p, _ := page.Parse("https://ethiojobs.net/job/abcdef1234-x", []byte(tc.html))
-			job, reason := ethiojobsJob(p, "abcdef1234", p.URL, m, fixedNow)
-			if tc.want == "CLOSED" {
-				if reason != "" || !job.Closed || job.ExternalID != "ethiojobs:abcdef1234" {
-					t.Errorf("job = %+v, reason = %q; want a closure marker for ethiojobs:abcdef1234", job, reason)
-				}
-				return
-			}
-			if reason != tc.want {
-				t.Errorf("reason = %q (job %+v), want %q", reason, job, tc.want)
-			}
-		})
-	}
-}
-
-func TestEthiojobsJob_AliasCompanyNameMatches(t *testing.T) {
-	m := matchFor("Kifiya Financial Technology")
-	p, _ := page.Parse("https://ethiojobs.net/job/abcdef1234-x",
-		[]byte(ejPage("active", "2026-09-20T00:00:00Z", "2026-10-20T00:00:00Z", "Kifiya Financial Technologies", "Manager")))
-	if _, reason := ethiojobsJob(p, "abcdef1234", p.URL, m, fixedNow); reason != "" {
-		t.Errorf("alias 'Kifiya Financial Technologies' rejected: %s", reason)
-	}
-}
-
 // ---- ListJobs end to end (fakes) ----
 
-func TestListJobs_CombinesBothSitesAndDedupesByTitle(t *testing.T) {
+func TestListJobs_ReturnsVerifiedLinkedInJobsAndClosureMarkers(t *testing.T) {
 	s := &fakeSearcher{bySite: map[string][]search.Result{
 		"linkedin.com/jobs/view": {
 			li("https://et.linkedin.com/jobs/view/senior-compliance-officer-at-ethswitch-4470000011", "Senior Compliance Officer at EthSwitch - LinkedIn", "", "2 days ago"),
+			li("https://et.linkedin.com/jobs/view/senior-compliance-officer-at-ethswitch-4470000014", "Senior Compliance Officer at EthSwitch - LinkedIn", "", "1 day ago"), // same opening reposted
 			li("https://et.linkedin.com/jobs/view/driver-at-ethswitch-4470000012", "Driver at EthSwitch - LinkedIn", "", "3 days ago"),
 			li("https://et.linkedin.com/jobs/view/analyst-at-some-other-bank-4470000013", "Analyst at Some Other Bank", "", "1 day ago"),
-		},
-		"ethiojobs.net/job": {
-			li("https://ethiojobs.net/job/Ubd2cAJy92-senior-compliance-officer", "Senior Compliance Officer", "", ""),
-			li("https://ethiojobs.net/companies/ethswitch-sc", "Ethswitch S.C. Jobs and Vacancies", "", ""),
-			li("https://ethiojobs.net/job/xBLzjWk2fj-network-manager", "Network Manager", "", ""),
+			li("https://et.linkedin.com/jobs/view/old-role-at-ethswitch-4225170741", "Old Role at EthSwitch - LinkedIn", "", "2 days ago"),
 		},
 	}}
-	p := &fakePages{html: map[string]string{
-		"https://ethiojobs.net/job/Ubd2cAJy92-senior-compliance-officer": ejPage("active", "2026-09-23T10:22:18Z", "2026-09-30T23:59:59Z", "Ethswitch S.C.", "Senior Compliance Officer"),
-		"https://ethiojobs.net/job/xBLzjWk2fj-network-manager":           ejPage("closed", "2026-09-16T10:44:57Z", "2026-09-23T23:59:59Z", "Ethswitch S.C.", "Network Manager"),
-	}}
-	c := newClient(s, p, 10)
+	c := newClient(s, 10)
 
 	jobs, err := c.ListJobs(context.Background(), "ethswitch")
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
-
 	got := map[string]ats.Job{}
 	for _, j := range jobs {
 		got[j.ExternalID] = j
 	}
 	if len(jobs) != 4 {
-		t.Fatalf("got %d jobs %v, want 4: the Ethiojobs compliance officer, the LinkedIn driver, a closure "+
-			"marker for the ended network-manager posting and a closure marker for the LinkedIn duplicate of "+
-			"the compliance officer (the other bank and the company page are rejected)",
-			len(jobs), ids(jobs))
+		t.Fatalf("got %d jobs %v, want 4: the compliance officer, the driver, a closure marker for the repost "+
+			"and one for the ~18-month-old role (the other bank is rejected)", len(jobs), ids(jobs))
 	}
-	if dup := got["linkedin:4470000011"]; !dup.Closed {
-		t.Errorf("the LinkedIn duplicate = %+v, want a closure marker so an earlier-stored copy does not show twice", dup)
-	}
-	if ended := got["ethiojobs:xBLzjWk2fj"]; !ended.Closed {
-		t.Errorf("the closed Ethiojobs posting = %+v, want a closure marker so a stored copy is closed at once", ended)
-	}
-	for _, id := range []string{"ethiojobs:Ubd2cAJy92", "linkedin:4470000012"} {
+	for _, id := range []string{"linkedin:4470000011", "linkedin:4470000012"} {
 		if got[id].Closed || got[id].Title == "" {
 			t.Errorf("%s = %+v, want a live job", id, got[id])
 		}
 	}
-	if _, ok := got["ethiojobs:Ubd2cAJy92"]; !ok {
-		t.Errorf("missing the Ethiojobs job; got %v (Ethiojobs' richer record must win the duplicate)", ids(jobs))
+	if !got["linkedin:4470000014"].Closed {
+		t.Errorf("the reposted duplicate = %+v, want a closure marker", got["linkedin:4470000014"])
 	}
-	if _, ok := got["linkedin:4470000012"]; !ok {
-		t.Errorf("missing the LinkedIn driver job; got %v", ids(jobs))
+	if !got["linkedin:4225170741"].Closed {
+		t.Errorf("the old role = %+v, want a closure marker (too old)", got["linkedin:4225170741"])
 	}
 
-	// Two queries, month-limited, one per site, quoted company name.
-	if len(s.queries) != 2 {
-		t.Fatalf("queries = %v, want exactly 2", s.queries)
+	// One query, month-limited, quoted company name, LinkedIn only.
+	if len(s.queries) != 1 || !strings.Contains(s.queries[0], `"EthSwitch"`) || !strings.Contains(s.queries[0], "linkedin.com/jobs/view") {
+		t.Errorf("queries = %v, want exactly one quoted-company LinkedIn query", s.queries)
 	}
-	for i, q := range s.queries {
-		if !strings.Contains(q, `"EthSwitch"`) {
-			t.Errorf("query %d = %q, want the quoted company name", i, q)
-		}
-		if s.recency[i] != search.RecencyMonth {
-			t.Errorf("query %d recency = %q, want month", i, s.recency[i])
-		}
-	}
-	// Only the two job-shaped Ethiojobs URLs were fetched; never LinkedIn,
-	// never the company page.
-	for _, u := range p.fetched {
-		if strings.Contains(u, "linkedin") || strings.Contains(u, "/companies/") {
-			t.Errorf("fetched %s; LinkedIn and non-job pages must never be fetched", u)
-		}
-	}
-	if len(p.fetched) != 2 {
-		t.Errorf("fetched %v, want the 2 job pages", p.fetched)
+	if s.recency[0] != search.RecencyMonth {
+		t.Errorf("recency = %q, want month", s.recency[0])
 	}
 }
 
@@ -667,7 +500,7 @@ func ids(jobs []ats.Job) []string {
 
 func TestListJobs_UnknownCompanyIsInvalidBoardToken(t *testing.T) {
 	s := &fakeSearcher{}
-	c := newClient(s, &fakePages{}, 10)
+	c := newClient(s, 10)
 	for _, name := range []string{"", "Nobody Inc", "Chaka Gebeya"} {
 		if _, err := c.ListJobs(context.Background(), name); !errors.Is(err, ats.ErrInvalidBoardToken) {
 			t.Errorf("ListJobs(%q) error = %v, want ErrInvalidBoardToken", name, err)
@@ -679,7 +512,7 @@ func TestListJobs_UnknownCompanyIsInvalidBoardToken(t *testing.T) {
 }
 
 func TestListJobs_MatchesBoardTokenLooselyButNotLoosely_Enough(t *testing.T) {
-	c := newClient(&fakeSearcher{}, &fakePages{}, 10)
+	c := newClient(&fakeSearcher{}, 10)
 	for _, name := range []string{"Gebeya Inc.", "gebeya", " GEBEYA ", "Gebeya Inc"} {
 		if _, err := c.ListJobs(context.Background(), name); err != nil {
 			t.Errorf("ListJobs(%q) error = %v, want it to resolve to the Gebeya entry", name, err)
@@ -689,29 +522,23 @@ func TestListJobs_MatchesBoardTokenLooselyButNotLoosely_Enough(t *testing.T) {
 
 func TestListJobs_BudgetIsEnforcedAndCounted(t *testing.T) {
 	s := &fakeSearcher{}
-	c := newClient(s, &fakePages{}, 3)
+	c := newClient(s, 2)
 
-	if _, err := c.ListJobs(context.Background(), "Chapa Financial Technologies"); err != nil {
-		t.Fatalf("first ListJobs() error = %v", err)
+	for i, name := range []string{"Chapa Financial Technologies", "Kifiya Financial Technology"} {
+		if _, err := c.ListJobs(context.Background(), name); err != nil {
+			t.Fatalf("ListJobs() #%d error = %v", i+1, err)
+		}
+		if c.budget.Used() != i+1 {
+			t.Fatalf("budget used = %d after %d companies, want %d (one query each)", c.budget.Used(), i+1, i+1)
+		}
 	}
-	if c.budget.Used() != 2 {
-		t.Fatalf("budget used = %d after one company, want 2", c.budget.Used())
-	}
-	// Needs 2 more, only 1 left: the LinkedIn query spends it, the second
-	// query is refused, and the whole company fails rather than returning half.
-	_, err := c.ListJobs(context.Background(), "Kifiya Financial Technology")
+	// Fully spent: the next company fails and no query reaches the network.
+	_, err := c.ListJobs(context.Background(), "Gebeya Inc.")
 	if !errors.Is(err, ErrBudgetExhausted) {
-		t.Fatalf("second ListJobs() error = %v, want ErrBudgetExhausted", err)
+		t.Fatalf("third ListJobs() error = %v, want ErrBudgetExhausted", err)
 	}
-	if c.budget.Used() != 3 || len(s.queries) != 3 {
-		t.Errorf("budget used = %d, queries sent = %d; want exactly the limit (3), never more", c.budget.Used(), len(s.queries))
-	}
-	// Fully spent: no query at all reaches the network.
-	if _, err := c.ListJobs(context.Background(), "Gebeya Inc."); !errors.Is(err, ErrBudgetExhausted) {
-		t.Errorf("third ListJobs() error = %v, want ErrBudgetExhausted", err)
-	}
-	if len(s.queries) != 3 {
-		t.Errorf("queries sent = %d after exhaustion, want still 3", len(s.queries))
+	if c.budget.Used() != 2 || len(s.queries) != 2 {
+		t.Errorf("budget used = %d, queries sent = %d; want exactly the limit (2), never more", c.budget.Used(), len(s.queries))
 	}
 }
 
@@ -740,7 +567,7 @@ func TestBudget_ConcurrentTakesNeverExceedTheLimit(t *testing.T) {
 
 func TestListJobs_SearchErrorIsReturned(t *testing.T) {
 	s := &fakeSearcher{err: search.ErrUnauthorized}
-	_, err := newClient(s, &fakePages{}, 10).ListJobs(context.Background(), "Chapa Financial Technologies")
+	_, err := newClient(s, 10).ListJobs(context.Background(), "Chapa Financial Technologies")
 	if !errors.Is(err, search.ErrUnauthorized) {
 		t.Errorf("error = %v, want it to wrap search.ErrUnauthorized", err)
 	}
@@ -748,20 +575,20 @@ func TestListJobs_SearchErrorIsReturned(t *testing.T) {
 
 func TestListJobs_TransientSearchErrorIsRetriedOnceAndEveryAttemptSpendsBudget(t *testing.T) {
 	s := &fakeSearcher{failTimes: 1}
-	c := newClient(s, &fakePages{}, 10)
+	c := newClient(s, 10)
 
 	if _, err := c.ListJobs(context.Background(), "EthSwitch"); err != nil {
 		t.Fatalf("ListJobs() error = %v, want the single transient failure retried", err)
 	}
-	// LinkedIn: fail + retry, Ethiojobs: 1 = 3 requests, 3 budget units.
-	if len(s.queries) != 3 || c.budget.Used() != 3 {
-		t.Errorf("queries = %d, budget used = %d; want 3 and 3 (a failed request may still be billed)", len(s.queries), c.budget.Used())
+	// One failed attempt plus its retry: 2 requests, 2 budget units.
+	if len(s.queries) != 2 || c.budget.Used() != 2 {
+		t.Errorf("queries = %d, budget used = %d; want 2 and 2 (a failed request may still be billed)", len(s.queries), c.budget.Used())
 	}
 }
 
 func TestListJobs_PersistentSearchErrorGivesUpAfterOneRetry(t *testing.T) {
 	s := &fakeSearcher{failTimes: 100}
-	c := newClient(s, &fakePages{}, 10)
+	c := newClient(s, 10)
 	if _, err := c.ListJobs(context.Background(), "EthSwitch"); err == nil {
 		t.Fatal("ListJobs() succeeded although every request failed")
 	}
@@ -772,7 +599,7 @@ func TestListJobs_PersistentSearchErrorGivesUpAfterOneRetry(t *testing.T) {
 
 func TestListJobs_UnauthorizedIsNeverRetried(t *testing.T) {
 	s := &fakeSearcher{err: search.ErrUnauthorized}
-	c := newClient(s, &fakePages{}, 10)
+	c := newClient(s, 10)
 	if _, err := c.ListJobs(context.Background(), "EthSwitch"); !errors.Is(err, search.ErrUnauthorized) {
 		t.Fatalf("error = %v, want ErrUnauthorized", err)
 	}
@@ -783,7 +610,7 @@ func TestListJobs_UnauthorizedIsNeverRetried(t *testing.T) {
 
 func TestListJobs_RetryDoesNotOutliveTheBudget(t *testing.T) {
 	s := &fakeSearcher{failTimes: 100}
-	c := newClient(s, &fakePages{}, 1)
+	c := newClient(s, 1)
 	_, err := c.ListJobs(context.Background(), "EthSwitch")
 	if !errors.Is(err, ErrBudgetExhausted) {
 		t.Errorf("error = %v, want ErrBudgetExhausted (the retry must not exceed the cap)", err)
@@ -795,7 +622,7 @@ func TestListJobs_RetryDoesNotOutliveTheBudget(t *testing.T) {
 
 func TestListJobs_SerializesSearchRequestsAcrossCompanies(t *testing.T) {
 	s := &fakeSearcher{}
-	c := newClient(s, &fakePages{}, 100)
+	c := newClient(s, 100)
 	var wg sync.WaitGroup
 	for _, name := range []string{"Chapa Financial Technologies", "Gebeya Inc.", "Kifiya Financial Technology", "EthSwitch"} {
 		wg.Go(func() { _, _ = c.ListJobs(context.Background(), name) })
@@ -804,69 +631,26 @@ func TestListJobs_SerializesSearchRequestsAcrossCompanies(t *testing.T) {
 	if s.maxSeen != 1 {
 		t.Errorf("up to %d Serper requests were in flight at once, want 1", s.maxSeen)
 	}
-	if len(s.queries) != 8 {
-		t.Errorf("made %d requests, want 8 (2 per company)", len(s.queries))
+	if len(s.queries) != 4 {
+		t.Errorf("made %d requests, want 4 (1 per company)", len(s.queries))
 	}
 }
 
-func TestListJobs_EthiojobsFetchFailuresSkipTheResultNotTheRun(t *testing.T) {
-	s := &fakeSearcher{bySite: map[string][]search.Result{
-		"ethiojobs.net/job": {
-			li("https://ethiojobs.net/job/aaaaaaaaaa-one", "One", "", ""),
-			li("https://ethiojobs.net/job/bbbbbbbbbb-two", "Two", "", ""),
-			li("https://ethiojobs.net/job/cccccccccc-three", "Three", "", ""),
-		},
-	}}
-	p := &fakePages{
-		errs: map[string]error{
-			"https://ethiojobs.net/job/aaaaaaaaaa-one": page.ErrDisallowed,
-			"https://ethiojobs.net/job/bbbbbbbbbb-two": errors.New("timeout"),
-		},
-		html: map[string]string{
-			"https://ethiojobs.net/job/cccccccccc-three": ejPage("active", "2026-09-20T00:00:00Z", "2026-10-20T00:00:00Z", "Gebeya Developer As A Service", "Three"),
-		},
-	}
-	// "Gebeya Developer As A Service" is not "Gebeya": also proves the
-	// page-side company check runs on the fetched page.
-	jobs, err := newClient(s, p, 10).ListJobs(context.Background(), "Gebeya Inc.")
-	if err != nil {
-		t.Fatalf("ListJobs() error = %v, want the per-page failures skipped", err)
-	}
-	if len(jobs) != 0 {
-		t.Errorf("jobs = %v, want none", ids(jobs))
-	}
-}
-
-func TestListJobs_CapsEthiojobsPageFetches(t *testing.T) {
-	var results []search.Result
-	for i := range 25 {
-		results = append(results, li(fmt.Sprintf("https://ethiojobs.net/job/id%08d-role-%d", i, i), "r", "", ""))
-	}
-	// The real Serper client returns at most 10 results, but the cap must hold
-	// whatever a Searcher hands back.
-	s := &fakeSearcher{bySite: map[string][]search.Result{"ethiojobs.net/job": results}}
-	p := &fakePages{}
-	c := newClient(s, p, 10)
-	c.ListJobs(context.Background(), "Chapa Financial Technologies") //nolint:errcheck
-	if len(p.fetched) > maxEthiojobsFetches {
-		t.Errorf("fetched %d pages, cap is %d", len(p.fetched), maxEthiojobsFetches)
-	}
-}
-
-func TestListJobs_ContextCancellationIsReturned(t *testing.T) {
+func TestListJobs_ContextCancellationIsReturnedAndNotRetried(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &fakeSearcher{bySite: map[string][]search.Result{
-		"ethiojobs.net/job": {li("https://ethiojobs.net/job/aaaaaaaaaa-one", "One", "", "")},
-	}}
-	p := &fakePages{errs: map[string]error{"https://ethiojobs.net/job/aaaaaaaaaa-one": context.Canceled}}
 	cancel()
-	if _, err := newClient(s, p, 10).ListJobs(ctx, "Chapa Financial Technologies"); !errors.Is(err, context.Canceled) {
-		t.Errorf("error = %v, want context.Canceled (not silently skipped)", err)
+	s := &fakeSearcher{err: context.Canceled}
+	_, err := newClient(s, 10).ListJobs(ctx, "Chapa Financial Technologies")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	if len(s.queries) != 1 {
+		t.Errorf("made %d requests after cancellation, want 1 (no retry)", len(s.queries))
 	}
 }
 
 func TestStaleAfterIsDeclared(t *testing.T) {
-	if got := newClient(nil, nil, 1).StaleAfter(); got != DefaultStaleAfter || got <= 0 {
+	if got := newClient(nil, 1).StaleAfter(); got != DefaultStaleAfter || got <= 0 {
 		t.Errorf("StaleAfter() = %v, want %v", got, DefaultStaleAfter)
 	}
 }
@@ -898,50 +682,6 @@ func TestDedupeOpenings(t *testing.T) {
 	}
 }
 
-func TestTitleKey(t *testing.T) {
-	distinct := []string{"C# Developer", "C++ Developer", "C Developer", "Senior Accountant", "የሂሳብ ባለሙያ", "የሽያጭ ባለሙያ"}
-	seen := map[string]string{}
-	for _, title := range distinct {
-		k := titleKey(title)
-		if k == "" {
-			t.Errorf("titleKey(%q) is empty", title)
-		}
-		if other, dup := seen[k]; dup {
-			t.Errorf("titleKey(%q) == titleKey(%q) == %q; distinct titles collapsed", title, other, k)
-		}
-		seen[k] = title
-	}
-	same := [][2]string{
-		{"Senior  Engineer", "senior engineer"},
-		{"Senior Engineer!", "SENIOR ENGINEER"},
-		{"Re- Advertised", "Re-Advertised"},
-	}
-	for _, p := range same {
-		if titleKey(p[0]) != titleKey(p[1]) {
-			t.Errorf("titleKey(%q) = %q != titleKey(%q) = %q", p[0], titleKey(p[0]), p[1], titleKey(p[1]))
-		}
-	}
-}
-
-func TestListJobs_PageFetchesAreSpaced(t *testing.T) {
-	var results []search.Result
-	for i := range 3 {
-		results = append(results, li(fmt.Sprintf("https://ethiojobs.net/job/id%08d-role-%d", i, i), "r", "", ""))
-	}
-	s := &fakeSearcher{bySite: map[string][]search.Result{"ethiojobs.net/job": results}}
-	c := newClient(s, &fakePages{}, 10)
-	c.pagePause = 40 * time.Millisecond
-
-	start := time.Now()
-	if _, err := c.ListJobs(context.Background(), "EthSwitch"); err != nil {
-		t.Fatalf("ListJobs() error = %v", err)
-	}
-	// 3 fetches => 2 pauses of 40ms.
-	if elapsed := time.Since(start); elapsed < 75*time.Millisecond {
-		t.Errorf("3 page fetches took %v, want at least 2 pauses of 40ms", elapsed)
-	}
-}
-
 func TestParseResultDate_OverflowingAgesAreRejectedNotWrapped(t *testing.T) {
 	for _, in := range []string{"300 years ago", "5000 months ago", "999999 days ago", "101 years ago"} {
 		if got := parseResultDate(in, fixedNow); !got.IsZero() {
@@ -953,18 +693,41 @@ func TestParseResultDate_OverflowingAgesAreRejectedNotWrapped(t *testing.T) {
 	}
 }
 
-func TestSlugify(t *testing.T) {
-	cases := map[string]string{
-		"UI/UX Designer":             "ui-ux-designer",
-		"  Hello,   World!  ":        "hello-world",
-		"Frontend Developer (React)": "frontend-developer-react",
-		"Écrivain":                   "crivain",
-		"":                           "",
-		"---":                        "",
+// "Addis Software" has Addis in its own name, which every one of its results
+// repeats. That must not count as an Ethiopia signal for a Nairobi job.
+func TestLinkedInJob_ACompanyNamedAddisDoesNotVouchForAJobElsewhere(t *testing.T) {
+	m := companyMatch{company: Company{Name: "Addis Software"}, keys: map[string]bool{nameKey("Addis Software"): true}}
+	nairobi := li("https://www.linkedin.com/jobs/view/backend-engineer-at-addis-software-4470900012",
+		"Addis Software hiring Backend Engineer in Nairobi, Kenya | LinkedIn",
+		"Addis Software is hiring a Backend Engineer in Nairobi, Kenya.", "2 days ago")
+	if job, reason := linkedInJob(nairobi, m, fixedNow); reason != "outside-ethiopia" {
+		t.Errorf("Nairobi job accepted: reason %q, job %+v", reason, job)
 	}
-	for in, want := range cases {
-		if got := slugify(in); got != want {
-			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
+	addis := li("https://et.linkedin.com/jobs/view/backend-engineer-at-addis-software-4470900013",
+		"Addis Software hiring Backend Engineer in Addis Ababa, Ethiopia | LinkedIn", "", "2 days ago")
+	if _, reason := linkedInJob(addis, m, fixedNow); reason != "" {
+		t.Errorf("Addis Ababa job rejected: %q", reason)
+	}
+}
+
+// The same set of jobs must dedupe the same way whatever order search returns
+// them in (SamePlace is not transitive: "Ethiopia" matches both cities).
+func TestDedupeOpenings_DoesNotDependOnResultOrder(t *testing.T) {
+	locs := []string{"Ethiopia", "Addis Ababa", "Hawassa"}
+	perms := [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+	for _, p := range perms {
+		var in []ats.Job
+		for _, i := range p {
+			in = append(in, ats.Job{ExternalID: locs[i], Title: "Cashier", Employer: "Bank", LocationRaw: locs[i], URL: "u"})
+		}
+		open := map[string]bool{}
+		for _, j := range dedupeOpenings(in) {
+			if !j.Closed {
+				open[j.ExternalID] = true
+			}
+		}
+		if len(open) != 2 || !open["Addis Ababa"] || !open["Hawassa"] {
+			t.Errorf("order %v: open = %v, want the two named cities kept and the city-less one dropped", p, open)
 		}
 	}
 }

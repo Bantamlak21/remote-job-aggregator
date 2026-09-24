@@ -123,7 +123,10 @@ func TestSeedAndCoverage_AgainstRealPostgres(t *testing.T) {
 		return job.Record{CompanyID: c.ID, TargetCompanyID: tgt.ID, Source: source, SourceJobID: id,
 			Title: "Role " + id, ApplicationURL: "https://x.example/" + id}
 	}
+	expired := rec(ethswitch, ethswitchSearch, "search", "ethiojobs:expired")
+	expired.ExpiresAt = time.Now().Add(-48 * time.Hour) // open in the table, but past its deadline
 	for _, r := range []job.Record{
+		expired,
 		rec(kifiya, kifiyaSearch, "search", "linkedin:1"),
 		rec(kifiya, kifiyaPage, "careers-site", "kifiya.com/jobs/a"),
 		rec(kifiya, kifiyaPage, "careers-site", "kifiya.com/jobs/closed"),
@@ -163,7 +166,7 @@ func TestSeedAndCoverage_AgainstRealPostgres(t *testing.T) {
 		t.Errorf("Kifiya = %+v, want 2 open jobs over 2 sources (the closed job is not counted)", got)
 	}
 	if got := byName["EthSwitch"]; got.OpenJobs != 1 || len(got.Targets) != 2 {
-		t.Errorf("EthSwitch = %+v, want 1 open job and 2 targets", got)
+		t.Errorf("EthSwitch = %+v, want 1 open job (the one past its deadline is not counted) and 2 targets", got)
 	}
 	if got := byName["Apposit"]; got.OpenJobs != 0 || len(got.Targets) != 1 {
 		t.Errorf("Apposit = %+v, want 0 open jobs and its search target", got)

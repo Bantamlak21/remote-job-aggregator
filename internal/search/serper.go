@@ -101,6 +101,8 @@ type requestBody struct {
 	// TBS is Google's time-based-search filter ("qdr:m" = past month);
 	// omitted for an unrestricted search.
 	TBS string `json:"tbs,omitempty"`
+	// Page selects the 10-result page (1-based); omitted for page 1.
+	Page int `json:"page,omitempty"`
 }
 
 // apiResponse mirrors the subset of Serper's response this package
@@ -149,23 +151,38 @@ var ErrUnauthorized = errors.New("search: unauthorized (invalid API key, or out 
 // Search runs query against Serper's search endpoint and returns up to
 // 10 results.
 func (c *Client) Search(ctx context.Context, query string) ([]Result, error) {
-	return c.search(ctx, query, "")
+	return c.search(ctx, query, "", 1)
 }
 
 // SearchRecent is Search limited to pages Google saw within recency.
 func (c *Client) SearchRecent(ctx context.Context, query string, recency Recency) ([]Result, error) {
+	return c.SearchRecentPage(ctx, query, recency, 1)
+}
+
+// maxPage bounds SearchRecentPage: deeper pages of a recency-limited
+// search are noise, and a bug must not be able to page (and pay) forever.
+const maxPage = 10
+
+// SearchRecentPage is SearchRecent for the given 1-based page of results.
+func (c *Client) SearchRecentPage(ctx context.Context, query string, recency Recency, page int) ([]Result, error) {
 	if !recency.valid() {
 		return nil, fmt.Errorf("search: invalid recency %q", recency)
+	}
+	if page < 1 || page > maxPage {
+		return nil, fmt.Errorf("search: page must be between 1 and %d, got %d", maxPage, page)
 	}
 	// One call is exactly one wire request: SearchRecent serves the metered
 	// job-search source, which counts calls against a query budget, so the
 	// shared client's own transparent retries (up to 3 more requests per
 	// call) must not multiply what Serper bills. That caller owns retrying.
-	return c.search(httpclient.WithoutRetries(ctx), query, "qdr:"+string(recency))
+	return c.search(httpclient.WithoutRetries(ctx), query, "qdr:"+string(recency), page)
 }
 
-func (c *Client) search(ctx context.Context, query, tbs string) ([]Result, error) {
-	body, err := json.Marshal(requestBody{Q: query, Num: 10, TBS: tbs})
+func (c *Client) search(ctx context.Context, query, tbs string, page int) ([]Result, error) {
+	if page == 1 {
+		page = 0 // omitted from the request: page 1 is the default
+	}
+	body, err := json.Marshal(requestBody{Q: query, Num: 10, TBS: tbs, Page: page})
 	if err != nil {
 		return nil, fmt.Errorf("search: encoding request: %w", err)
 	}

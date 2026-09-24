@@ -760,6 +760,32 @@ measured results:** [docs/priority-companies.md](docs/priority-companies.md). Su
   database; the mock repository is not filtered). On the dev database that keeps 109 of 575
   Greenhouse jobs and all 6 search jobs; raise or zero the variable to show more.
 
+### Fresh job sources: Ethiojobs and LinkedIn keyword search (branch `Bantamlak21/fresh-job-sources-e451cddd`)
+
+Requested by Bantamlak after research on getting fresh LinkedIn jobs (no legitimate direct
+LinkedIn read API exists; LinkedIn pages are never fetched). Full description, measurements and
+limits: [docs/fresh-jobs.md](docs/fresh-jobs.md). Summary:
+
+- **Collectors.** New `ingestion.Collector` (many employers per source; jobs name their
+  `Employer`; `Ingester.RunCollectors` groups by employer, creates the company and target with
+  `company.Registrar`, dedupes an opening across collectors in one run, never creates a company
+  for an employer seen only through ended postings, ages out absent employers).
+  `internal/companymatch` holds the shared name rules (`Key`, `Slug`, `TitleKey`, `Matcher`).
+- **Ethiojobs** (`internal/ats/ethiojobs`, provider `ethiojobs`, free, default-on): newest-first
+  listing pages, exact dates and deadlines; 944 jobs from 399 employers on the dev database in
+  about 90 s, second run 944 unchanged. It replaces per-company Ethiojobs search, so the
+  `search` source now spends 25 queries, not 50.
+- **LinkedIn keywords** (`jobsearch.FreshClient`, provider `linkedin`, opt-in): 24 keywords in
+  `configs/linkedin_queries.json`, last-day Serper results, employer taken from the URL slug,
+  strict Ethiopia check (the first live run stored a Zambian, a UK and a US job under a looser
+  rule; fixed, tests use the captured shapes). 24 queries gave 102 results and 16 jobs.
+- **Migration `000003`**: `jobs.expires_at`, hidden by the API when past; closes the legacy
+  per-company `search` Ethiojobs rows.
+- **Config:** `ETHIOJOBS_MAX_PAGES` (default 100). `--providers` now accepts `ethiojobs` and
+  `linkedin`. Serper key is used only for search calls and is never logged or committed.
+- **Known limits:** duplicates are removed within one run only; LinkedIn is a sample of what
+  Google shows; slug-derived company names lose acronym casing.
+
 ## 3. Work In Progress
 
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-

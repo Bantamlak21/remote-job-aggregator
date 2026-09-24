@@ -184,6 +184,9 @@ type IngestionConfig struct {
 	Workers          int
 	MaxResponseBytes int64
 	Timeout          time.Duration
+	// EthiojobsMaxPages caps how many listing pages (12 jobs each) one run
+	// of the Ethiojobs collector reads. The site has about 100.
+	EthiojobsMaxPages int
 }
 
 // SearchConfig configures the Serper (google.serper.dev) search API
@@ -362,6 +365,13 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("INGESTION_HTTP_TIMEOUT must be positive, got %s", ingestionTimeout))
 	}
 
+	ethiojobsMaxPages, err := getEnvInt("ETHIOJOBS_MAX_PAGES", 100)
+	if err != nil {
+		errs = append(errs, err)
+	} else if ethiojobsMaxPages < 1 || ethiojobsMaxPages > 200 {
+		errs = append(errs, fmt.Errorf("ETHIOJOBS_MAX_PAGES must be between 1 and 200, got %d", ethiojobsMaxPages))
+	}
+
 	jobRepository := getEnv("JOB_REPOSITORY", JobRepositoryPostgres)
 	if jobRepository != JobRepositoryPostgres && jobRepository != JobRepositoryMock {
 		errs = append(errs, fmt.Errorf("JOB_REPOSITORY must be one of [%s %s], got %q",
@@ -427,9 +437,10 @@ func Load() (*Config, error) {
 			Workers: discoveryWorkersRaw,
 		},
 		Ingestion: IngestionConfig{
-			Workers:          ingestionWorkersRaw,
-			MaxResponseBytes: ingestionMaxBytes,
-			Timeout:          ingestionTimeout,
+			Workers:           ingestionWorkersRaw,
+			MaxResponseBytes:  ingestionMaxBytes,
+			Timeout:           ingestionTimeout,
+			EthiojobsMaxPages: ethiojobsMaxPages,
 		},
 		Search: SearchConfig{
 			SerperAPIKey:     serperAPIKey,

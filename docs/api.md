@@ -30,6 +30,10 @@ rows stay in the database, so raising the limit shows them again. A job with no 
 counts from the day it was first seen. The mock repository (`JOB_REPOSITORY=mock`) does not apply
 the limit.
 
+**Application deadline.** A job whose deadline (`jobs.expires_at`, set by sources that publish
+one: Ethiojobs, careers pages with `validThrough`) has passed is hidden the same way, whatever
+`JOB_MAX_AGE_DAYS` says. A job with no deadline is never hidden by this rule.
+
 **Priority companies.** Jobs from the curated Ethiopian tech companies
 (`configs/ethiopian_companies.json`, see `docs/priority-companies.md`) carry
 `"is_priority": true`. They get no special position: `GET /api/v1/jobs` is always sorted

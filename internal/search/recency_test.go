@@ -87,6 +87,46 @@ func TestSearch_PlainSearchStillRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+func TestSearchRecentPage_SendsThePageAndKeepsTheFilterAndOneWireRequest(t *testing.T) {
+	var bodies []map[string]any
+	var wire atomic.Int64
+	c, base := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		wire.Add(1)
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		w.WriteHeader(http.StatusInternalServerError) // also proves no transparent retry on pages
+	})
+	withTestEndpoint(t, base)
+
+	for _, page := range []int{1, 3} {
+		if _, err := c.SearchRecentPage(context.Background(), "q", RecencyDay, page); err == nil {
+			t.Fatalf("page %d: succeeded against a failing server", page)
+		}
+	}
+	if wire.Load() != 2 {
+		t.Fatalf("wire requests = %d, want 2 (one per call)", wire.Load())
+	}
+	if _, has := bodies[0]["page"]; has {
+		t.Errorf("page 1 sent page=%v; the default page is omitted", bodies[0]["page"])
+	}
+	if bodies[1]["page"] != float64(3) || bodies[1]["tbs"] != "qdr:d" {
+		t.Errorf("page 3 body = %v, want page=3 and tbs=qdr:d", bodies[1])
+	}
+}
+
+func TestSearchRecentPage_RejectsOutOfRangePagesWithoutANetworkCall(t *testing.T) {
+	c, base := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request made for an invalid page")
+	})
+	withTestEndpoint(t, base)
+	for _, page := range []int{0, -1, maxPage + 1, 1 << 30} {
+		if _, err := c.SearchRecentPage(context.Background(), "q", RecencyDay, page); err == nil {
+			t.Errorf("page %d accepted", page)
+		}
+	}
+}
+
 func TestSearchRecent_RejectsUnknownWindowWithoutANetworkCall(t *testing.T) {
 	c, base := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("request made for an invalid recency")

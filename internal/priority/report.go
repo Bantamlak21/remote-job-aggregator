@@ -99,6 +99,7 @@ const (
 		SELECT j.company_id, j.source, count(*)
 		FROM jobs j JOIN companies c ON c.id = j.company_id
 		WHERE c.is_priority AND j.status = 'open'
+			AND (j.expires_at IS NULL OR j.expires_at > now())
 		GROUP BY j.company_id, j.source
 		ORDER BY j.company_id, j.source`
 

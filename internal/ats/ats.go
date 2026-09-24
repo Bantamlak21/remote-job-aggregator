@@ -44,7 +44,12 @@ type Provider string
 //
 //   - ProviderFeed: an RSS feed (board id = the feed URL)
 //   - ProviderCareersSite: a careers page listing job links (board id = the page URL)
-//   - ProviderSearch: web search over LinkedIn and Ethiojobs (board id = the company name)
+//   - ProviderSearch: web search over LinkedIn (board id = the company name)
+//
+// Two more providers, "ethiojobs" and "linkedin", belong to many-employer
+// collectors (ingestion.Collector). They have no client of their own: the
+// collector names each job's employer and the ingester creates one target
+// per employer (board id = the employer's lower-cased name).
 const (
 	ProviderGreenhouse  Provider = "greenhouse"
 	ProviderFeed        Provider = "feed"
@@ -69,6 +74,14 @@ type Job struct {
 	LocationRaw string
 	Description string
 	PublishedAt time.Time // zero means the provider didn't supply one
+	// ExpiresAt is the application deadline when the source publishes one
+	// (zero: none known). The public API stops serving the job after it.
+	ExpiresAt time.Time
+	// Employer names the company that posted the job. Only multi-employer
+	// sources (job boards, search) fill it; a per-company board (Greenhouse,
+	// a feed, a careers page) leaves it empty because the target already
+	// says whose it is.
+	Employer string
 	// Closed means the source itself reports this job as ended (an expired
 	// or closed posting). Only ExternalID is meaningful then. Ingestion
 	// does not store such a job; it closes any open row with that

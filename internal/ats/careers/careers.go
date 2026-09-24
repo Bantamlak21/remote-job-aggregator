@@ -271,6 +271,7 @@ func (c *Client) detail(ctx context.Context, cand candidate) (ats.Job, bool) {
 
 	job.Title = firstNonEmpty(jp.Title, p.H1, anchor, cleanPageTitle(p.Title), job.Title)
 	job.PublishedAt = posted
+	job.ExpiresAt = jp.ValidThrough
 	job.LocationRaw = jp.Location
 	if jp.Description != "" {
 		job.Description = ats.HTMLToText(jp.Description)

@@ -16,7 +16,7 @@ func clearAll(t *testing.T) {
 		"APP_ENV", "DATABASE_URL", "DB_MAX_OPEN_CONNS", "DB_MIN_CONNS",
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
-		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY", "SEARCH_MAX_QUERIES_PER_RUN", "JOB_MAX_AGE_DAYS",
+		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY", "SEARCH_MAX_QUERIES_PER_RUN", "JOB_MAX_AGE_DAYS", "ETHIOJOBS_MAX_PAGES",
 	} {
 		t.Setenv(key, "")
 	}
@@ -601,6 +601,26 @@ func TestLoad_IngestionHTTPDefaultsAreLargerThanTheSharedClientsAndValidated(t *
 	t.Setenv("INGESTION_HTTP_TIMEOUT", "0s")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "INGESTION_HTTP_TIMEOUT must be positive") {
 		t.Errorf("err = %v, want a rejection of a non-positive timeout", err)
+	}
+}
+
+func TestLoad_EthiojobsMaxPagesDefaultsOverridesAndValidates(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil || cfg.Ingestion.EthiojobsMaxPages != 100 {
+		t.Fatalf("default: pages = %d, err = %v; want 100", cfg.Ingestion.EthiojobsMaxPages, err)
+	}
+	t.Setenv("ETHIOJOBS_MAX_PAGES", "7")
+	if cfg, err = Load(); err != nil || cfg.Ingestion.EthiojobsMaxPages != 7 {
+		t.Fatalf("override: pages = %d, err = %v; want 7", cfg.Ingestion.EthiojobsMaxPages, err)
+	}
+	for _, bad := range []string{"0", "-1", "201", "many"} {
+		t.Setenv("ETHIOJOBS_MAX_PAGES", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "ETHIOJOBS_MAX_PAGES") {
+			t.Errorf("ETHIOJOBS_MAX_PAGES=%q: err = %v, want a validation error naming it", bad, err)
+		}
 	}
 }
 

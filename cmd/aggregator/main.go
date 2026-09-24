@@ -484,7 +484,7 @@ func runIngest(ctx context.Context, cfg *config.Config, logger *slog.Logger, arg
 		return err
 	}
 
-	sources := newIngestSources(cfg, newIngestionHTTPClient(cfg), defaultPriorityFile, logger)
+	sources := newIngestSources(cfg, newIngestionHTTPClient(cfg), defaultPriorityFile, defaultLinkedInQueriesFile, logger)
 	providers, err := chooseProviders(requested, sources)
 	if err != nil {
 		logger.Error(err.Error())
@@ -499,14 +499,32 @@ func runIngest(ctx context.Context, cfg *config.Config, logger *slog.Logger, arg
 	defer db.Close()
 
 	targetStore := company.NewTargetStore(db.Pool)
-	in := ingestion.New(ingestion.OnlyProviders(targetStore, providers...), targetStore, job.NewStore(db.Pool),
+	atsProviders, collectorNames := splitProviders(providers, sources)
+	in := ingestion.New(ingestion.OnlyProviders(targetStore, atsProviders...), targetStore, job.NewStore(db.Pool),
 		sources.clients, cfg.Ingestion.Workers, logger)
+	in.WithCollectors(ingestion.CollectorConfig{
+		Collectors: sources.collectors,
+		Registrar:  company.NewRegistrar(company.NewStore(db.Pool), targetStore),
+		Resolver:   sources.resolver,
+		Targets:    targetStore,
+	})
 	logger.Info("starting ingestion", "providers", providers)
 
-	results, err := in.Run(ctx)
-	if err != nil {
-		logger.Error("ingestion failed", "error", err)
-		return err
+	var results []ingestion.Result
+	if len(atsProviders) > 0 {
+		results, err = in.Run(ctx)
+		if err != nil {
+			logger.Error("ingestion failed", "error", err)
+			return err
+		}
+	}
+	if len(collectorNames) > 0 {
+		collected, err := in.RunCollectors(ctx, collectorNames)
+		results = append(results, collected...)
+		if err != nil {
+			logger.Error("collectors failed", "error", err)
+			return err
+		}
 	}
 	if sources.budget != nil {
 		logger.Info("search queries spent", "used", sources.budget.Used(), "limit", sources.budget.Max())

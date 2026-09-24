@@ -32,6 +32,7 @@ type Record struct {
 	ApplicationURL  string
 	LocationRaw     string
 	PublishedAt     time.Time // zero means unknown
+	ExpiresAt       time.Time // application deadline; zero means none known
 }
 
 // UpsertOutcome reports what UpsertFromATS actually did, for ingestion's
@@ -77,6 +78,12 @@ func (s *Store) WithMaxAge(maxAge time.Duration) *Store {
 	c.maxAge = max(maxAge, 0)
 	return &c
 }
+
+// notExpiredClause hides jobs whose application deadline has passed. It is
+// unconditional (unlike the age limit, which is configurable): a posting
+// nobody can still apply to is not useful at any setting. NULL = no known
+// deadline, which is most jobs.
+const notExpiredClause = ` AND (j.expires_at IS NULL OR j.expires_at > now())`
 
 // maxAgeClause is the SQL condition for the age limit, or "" when there is
 // none. It refers to the jobs alias j; arg registers the bound seconds.
@@ -134,8 +141,8 @@ const upsertJobQuery = `
 	)
 	INSERT INTO jobs (
 		company_id, target_company_id, source, source_job_id, canonical_url,
-		title, description, application_url, location_raw, published_at, content_hash
-	) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11)
+		title, description, application_url, location_raw, published_at, content_hash, expires_at
+	) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11, $12)
 	ON CONFLICT (source, source_job_id) DO UPDATE SET
 		title              = EXCLUDED.title,
 		description        = EXCLUDED.description,
@@ -143,6 +150,7 @@ const upsertJobQuery = `
 		location_raw       = EXCLUDED.location_raw,
 		canonical_url      = EXCLUDED.canonical_url,
 		published_at       = COALESCE(EXCLUDED.published_at, jobs.published_at),
+		expires_at         = COALESCE(EXCLUDED.expires_at, jobs.expires_at),
 		content_hash       = EXCLUDED.content_hash,
 		last_seen_at       = now(),
 		last_changed_at    = CASE WHEN jobs.content_hash IS DISTINCT FROM EXCLUDED.content_hash OR jobs.status <> 'open'
@@ -175,6 +183,11 @@ func (s *Store) UpsertFromATS(ctx context.Context, r Record) (UpsertOutcome, err
 		t := r.PublishedAt
 		publishedAt = &t
 	}
+	var expiresAt *time.Time
+	if !r.ExpiresAt.IsZero() {
+		t := r.ExpiresAt
+		expiresAt = &t
+	}
 
 	var (
 		id                  int64
@@ -184,7 +197,7 @@ func (s *Store) UpsertFromATS(ctx context.Context, r Record) (UpsertOutcome, err
 	)
 	err := s.pool.QueryRow(ctx, upsertJobQuery,
 		r.CompanyID, r.TargetCompanyID, source, sourceJobID, strings.TrimSpace(r.CanonicalURL),
-		r.Title, r.Description, r.ApplicationURL, strings.TrimSpace(r.LocationRaw), publishedAt, newHash,
+		r.Title, r.Description, r.ApplicationURL, strings.TrimSpace(r.LocationRaw), publishedAt, newHash, expiresAt,
 	).Scan(&id, &inserted, &previousContentHash, &previousStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -346,7 +359,7 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 	}
 
 	const fromClause = ` FROM jobs j JOIN companies c ON c.id = j.company_id`
-	where := ` WHERE j.status = 'open'`
+	where := ` WHERE j.status = 'open'` + notExpiredClause
 	args := []any{}
 	arg := func(v any) string {
 		args = append(args, v)
@@ -432,7 +445,7 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 
 const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description
 	FROM jobs j JOIN companies c ON c.id = j.company_id
-	WHERE j.status = 'open' AND j.id = $1`
+	WHERE j.status = 'open' AND j.id = $1` + notExpiredClause
 
 // Get returns the open job with the given id, or ErrNotFound — both for
 // a genuinely missing row and for a non-numeric id (this Store's ids

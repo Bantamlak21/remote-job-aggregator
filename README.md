@@ -52,10 +52,12 @@ aggregator search-discover [names-file]  # find each company's ATS board via the
                                        # then the same validate-and-persist as discover
 aggregator ingest [--providers=a,b]   # fetch jobs from the active targets (Greenhouse
                                        # boards, RSS feeds, careers pages), upsert them, and
-                                       # close out jobs that disappeared. The search-backed
-                                       # LinkedIn/Ethiojobs source for the priority companies
-                                       # spends Serper's fixed query allowance, so it never
-                                       # runs by default: name it, --providers=search
+                                       # close out jobs that disappeared, and collect the newest
+                                       # jobs from Ethiojobs (free, on by default). The Serper-
+                                       # backed sources spend a fixed query allowance, so they
+                                       # never run by default: name them, --providers=search
+                                       # (LinkedIn, per priority company) or --providers=linkedin
+                                       # (LinkedIn, by keyword). See docs/fresh-jobs.md
 aggregator seed-priority [file]       # register the Ethiopian priority companies and their
                                        # sources (default configs/ethiopian_companies.json)
 aggregator priority-report            # per-company open jobs by source, and how many of the
@@ -117,7 +119,8 @@ raw credential even when the value itself was the problem.
 | `HTTP_USER_AGENT` | no | `remote-job-aggregator/1.0 (+https://github.com/Bantamlak12/remote-job-aggregator)` | sent on every outbound request; must not be blank |
 | `DISCOVERY_WORKERS` | no | `5` | bounded concurrency for discovery's HTTP probes; 1 – 100 |
 | `SERPER_API_KEY` | no | — | for `search-discover` and the search-backed source of `ingest`; from https://serper.dev/api-keys |
-| `SEARCH_MAX_QUERIES_PER_RUN` | no | `60` | cap on Serper queries one `ingest` run may spend (2 per priority company, retries included); 1 – 2500. Serper's free tier is a fixed 2,500 queries, not a monthly allowance |
+| `SEARCH_MAX_QUERIES_PER_RUN` | no | `60` | cap on Serper queries one `ingest` run may spend across the `search` (1 per priority company) and `linkedin` (1 per keyword) sources, retries included; 1 – 2500. Serper's free tier is a fixed 2,500 queries, not a monthly allowance |
+| `ETHIOJOBS_MAX_PAGES` | no | `100` | most listing pages (12 jobs each) one Ethiojobs collection reads; 1 – 200 |
 | `API_ADDR` | no | `:8080` | only for `serve`; must be a valid `host:port` |
 | `CORS_ALLOWED_ORIGIN` | no | `http://localhost:5173` | only for `serve`; a single explicit origin, never `*` |
 | `JOB_REPOSITORY` | no | `postgres` | only for `serve`; `postgres` (real ingested jobs) or `mock` (12 fixture jobs, no database) |
@@ -305,7 +308,8 @@ source checks before it trusts a result, and the measured coverage are in
 aggregator migrate-up        # adds companies.is_priority
 aggregator seed-priority     # registers the 25 companies and their sources (idempotent)
 aggregator ingest                    # free sources, e.g. daily
-aggregator ingest --providers=search # LinkedIn + Ethiojobs, 50 Serper queries, e.g. weekly
+aggregator ingest --providers=search # LinkedIn per priority company, 25 Serper queries, e.g. weekly
+aggregator ingest --providers=linkedin # newest LinkedIn jobs by keyword, ~24 Serper queries
 aggregator priority-report   # what is actually covered
 ```
 
@@ -368,8 +372,10 @@ Modular monolith, one deployable binary. Package boundaries so far:
   is the first provider (Greenhouse's public Job Board API, no key needed).
   Three more job sources share the same `ats.Job` shape: `internal/ats/feed`
   (RSS), `internal/ats/careers` (a company's own careers page) and
-  `internal/ats/jobsearch` (web search over LinkedIn and Ethiojobs, with
-  strict company verification). `internal/ats/page` is their shared
+  `internal/ats/jobsearch` (web search over LinkedIn, with strict company
+  verification). `internal/ats/ethiojobs` and the keyword-driven `FreshClient`
+  in `jobsearch` are collectors (many employers per source, see
+  `internal/ingestion/collectors.go` and docs/fresh-jobs.md). `internal/ats/page` is their shared
   robots-gated page fetcher and parser, and `internal/robots` the RFC 9309
   robots.txt checker every page fetch goes through.
 - `internal/priority` — the curated priority-company list: loading and

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -71,70 +72,132 @@ func TestParseIngestArgs(t *testing.T) {
 	}
 }
 
-func TestNewIngestSources_WithoutASerperKeyTheSearchSourceIsLeftOut(t *testing.T) {
-	s := newIngestSources(testConfig(""), httpclient.New(httpclient.DefaultConfig()), shippedPriorityFile(), discardLogger())
+func shippedQueriesFile() string {
+	return filepath.Join("..", "..", "configs", "linkedin_queries.json")
+}
 
-	want := []string{"careers-site", "feed", "greenhouse"}
-	if !slices.Equal(s.defaultProviders, want) {
-		t.Errorf("defaultProviders = %v, want %v", s.defaultProviders, want)
+func sourcesFor(serperKey string) ingestSources {
+	return newIngestSources(testConfig(serperKey), httpclient.New(httpclient.DefaultConfig()),
+		shippedPriorityFile(), shippedQueriesFile(), discardLogger())
+}
+
+// The free sources run by default; the Serper-backed ones never do.
+var freeDefaults = []string{"careers-site", "ethiojobs", "feed", "greenhouse"}
+
+func TestNewIngestSources_WithoutASerperKeyOnlyTheFreeSourcesExist(t *testing.T) {
+	s := sourcesFor("")
+
+	if !slices.Equal(s.defaultProviders, freeDefaults) {
+		t.Errorf("defaultProviders = %v, want %v", s.defaultProviders, freeDefaults)
 	}
 	if _, ok := s.clients["search"]; ok || s.budget != nil {
 		t.Errorf("search client registered without a SERPER_API_KEY")
 	}
+	if _, ok := s.collectors["linkedin"]; ok {
+		t.Errorf("linkedin collector registered without a SERPER_API_KEY")
+	}
+	if _, ok := s.collectors["ethiojobs"]; !ok {
+		t.Errorf("ethiojobs collector missing; it needs no key")
+	}
+	if s.resolver == nil {
+		t.Errorf("no priority resolver although the priority list loads")
+	}
 }
 
-func TestNewIngestSources_WithAKeyAndTheListTheSearchSourceIsBudgeted(t *testing.T) {
-	s := newIngestSources(testConfig("test-key"), httpclient.New(httpclient.DefaultConfig()), shippedPriorityFile(), discardLogger())
+func TestNewIngestSources_WithAKeyTheSerperSourcesAreBudgetedTogetherAndOptIn(t *testing.T) {
+	s := sourcesFor("test-key")
 
 	if _, ok := s.clients["search"]; !ok {
-		t.Fatalf("search client missing; clients = %v", s.defaultProviders)
+		t.Fatalf("search client missing")
+	}
+	if _, ok := s.collectors["linkedin"]; !ok {
+		t.Fatalf("linkedin collector missing")
 	}
 	if s.budget == nil || s.budget.Max() != 60 || s.budget.Used() != 0 {
-		t.Errorf("budget = %+v, want a fresh budget of 60", s.budget)
+		t.Errorf("budget = %+v, want one fresh budget of 60 for both Serper sources", s.budget)
 	}
-	// Registered, but never a default: it spends the fixed Serper allowance,
-	// so a plain "ingest" must not run it.
-	want := []string{"careers-site", "feed", "greenhouse"}
-	if !slices.Equal(s.defaultProviders, want) {
-		t.Errorf("defaultProviders = %v, want %v (search must be opt-in)", s.defaultProviders, want)
+	// Registered, but never a default: they spend the fixed Serper allowance,
+	// so a plain "ingest" must not run them.
+	if !slices.Equal(s.defaultProviders, freeDefaults) {
+		t.Errorf("defaultProviders = %v, want %v (Serper sources must be opt-in)", s.defaultProviders, freeDefaults)
 	}
-	got, err := chooseProviders([]string{"search"}, s)
-	if err != nil || !slices.Equal(got, []string{"search"}) {
-		t.Errorf("chooseProviders(search) = %v, %v; want it accepted when named", got, err)
+	for _, name := range []string{"search", "linkedin"} {
+		got, err := chooseProviders([]string{name}, s)
+		if err != nil || !slices.Equal(got, []string{name}) {
+			t.Errorf("chooseProviders(%s) = %v, %v; want it accepted when named", name, got, err)
+		}
 	}
-	if def, _ := chooseProviders(nil, s); slices.Contains(def, "search") {
-		t.Errorf("a plain ingest would run the paid search source: %v", def)
+	def, _ := chooseProviders(nil, s)
+	if slices.Contains(def, "search") || slices.Contains(def, "linkedin") {
+		t.Errorf("a plain ingest would run a paid source: %v", def)
 	}
 }
 
-func TestNewIngestSources_AKeyButNoListLeavesSearchOutInsteadOfCrashing(t *testing.T) {
+func TestNewIngestSources_AKeyButNoListLeavesPerCompanySearchOutButKeepsTheRest(t *testing.T) {
 	s := newIngestSources(testConfig("test-key"), httpclient.New(httpclient.DefaultConfig()),
-		filepath.Join(t.TempDir(), "missing.json"), discardLogger())
+		filepath.Join(t.TempDir(), "missing.json"), shippedQueriesFile(), discardLogger())
 	if _, ok := s.clients["search"]; ok {
 		t.Errorf("search client registered although the company list could not be loaded")
 	}
-	if len(s.defaultProviders) != 3 {
-		t.Errorf("defaultProviders = %v, want the 3 non-search providers", s.defaultProviders)
+	if !slices.Equal(s.defaultProviders, freeDefaults) {
+		t.Errorf("defaultProviders = %v, want %v", s.defaultProviders, freeDefaults)
+	}
+	if _, ok := s.collectors["linkedin"]; !ok {
+		t.Errorf("linkedin collector missing; it does not need the priority list")
+	}
+	if s.resolver != nil {
+		t.Errorf("resolver is set although the list is missing (a nil *Matcher in an interface is a trap)")
+	}
+}
+
+func TestNewIngestSources_AMissingKeywordFileLeavesLinkedInOut(t *testing.T) {
+	s := newIngestSources(testConfig("test-key"), httpclient.New(httpclient.DefaultConfig()),
+		shippedPriorityFile(), filepath.Join(t.TempDir(), "missing.json"), discardLogger())
+	if _, ok := s.collectors["linkedin"]; ok {
+		t.Errorf("linkedin collector registered although its keyword list could not be loaded")
+	}
+	if _, ok := s.clients["search"]; !ok {
+		t.Errorf("per-company search lost because of the keyword file")
+	}
+	if _, err := chooseProviders([]string{"linkedin"}, s); err == nil {
+		t.Errorf("chooseProviders(linkedin) accepted without a collector")
 	}
 }
 
 func TestChooseProviders(t *testing.T) {
-	without := newIngestSources(testConfig(""), httpclient.New(httpclient.DefaultConfig()), shippedPriorityFile(), discardLogger())
+	without := sourcesFor("")
 
 	got, err := chooseProviders(nil, without)
 	if err != nil || !slices.Equal(got, without.defaultProviders) {
 		t.Errorf("chooseProviders(nil) = %v, %v; want the defaults", got, err)
 	}
-	got, err = chooseProviders([]string{"feed"}, without)
-	if err != nil || !slices.Equal(got, []string{"feed"}) {
-		t.Errorf("chooseProviders(feed) = %v, %v", got, err)
+	got, err = chooseProviders([]string{"feed", "ethiojobs"}, without)
+	if err != nil || !slices.Equal(got, []string{"feed", "ethiojobs"}) {
+		t.Errorf("chooseProviders(feed, ethiojobs) = %v, %v", got, err)
 	}
 	// Asking for a source that cannot run must fail loudly.
-	for _, bad := range [][]string{{"search"}, {"feed", "nonsense"}} {
+	for _, bad := range [][]string{{"search"}, {"linkedin"}, {"feed", "nonsense"}} {
 		_, err := chooseProviders(bad, without)
 		if err == nil || !strings.Contains(err.Error(), "no client for provider") {
 			t.Errorf("chooseProviders(%v) error = %v, want 'no client for provider'", bad, err)
 		}
+	}
+}
+
+func TestSplitProviders_SeparatesCollectorsAndOrdersThem(t *testing.T) {
+	s := sourcesFor("test-key")
+	ats, cols := splitProviders([]string{"linkedin", "feed", "search", "ethiojobs"}, s)
+	if !slices.Equal(ats, []string{"feed", "search"}) {
+		t.Errorf("ATS providers = %v, want [feed search]", ats)
+	}
+	// Ethiojobs runs before LinkedIn whatever the order asked for: it is the
+	// richer source, so an opening both list is stored from it.
+	if !slices.Equal(cols, []string{"ethiojobs", "linkedin"}) {
+		t.Errorf("collectors = %v, want [ethiojobs linkedin]", cols)
+	}
+	ats, cols = splitProviders([]string{"feed"}, s)
+	if len(cols) != 0 || !slices.Equal(ats, []string{"feed"}) {
+		t.Errorf("feed only: ats %v, collectors %v", ats, cols)
 	}
 }
 
@@ -176,5 +239,25 @@ func unwrapAll(err error) error {
 			return err
 		}
 		err = u.Unwrap()
+	}
+}
+
+func TestNewIngestSources_WarnsWhenTheKeywordListCannotFitTheBudget(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	cfg := testConfig("test-key")
+	cfg.Search.MaxQueriesPerRun = 5 // the shipped list has 24 keywords
+	newIngestSources(cfg, httpclient.New(httpclient.DefaultConfig()), shippedPriorityFile(), shippedQueriesFile(), logger)
+	if !strings.Contains(buf.String(), "needs more queries than SEARCH_MAX_QUERIES_PER_RUN") {
+		t.Errorf("no budget warning in the log:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	newIngestSources(testConfig("test-key"), httpclient.New(httpclient.DefaultConfig()), shippedPriorityFile(), shippedQueriesFile(), logger)
+	if strings.Contains(buf.String(), "needs more queries") {
+		t.Errorf("budget warning with the default budget:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "test-key") {
+		t.Errorf("the Serper key was logged")
 	}
 }

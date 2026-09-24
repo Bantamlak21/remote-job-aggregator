@@ -1,34 +1,31 @@
-// Package jobsearch finds a company's open jobs on the public job sites it
-// posts to, using web search instead of a per-site integration. The board
-// token is the company's name (as listed in configs/ethiopian_companies.json).
+// Package jobsearch finds LinkedIn jobs through web search. LinkedIn has no
+// API for reading jobs and its robots.txt disallows crawling, so its pages
+// are never fetched: a job comes only from a search result itself (URL,
+// title, snippet, date), and its link sends the person to LinkedIn to apply.
 //
-// Two sites are covered, each handled differently because they allow
-// different things:
+// Two clients share the parsing and verification rules:
 //
-//   - LinkedIn: pages are never fetched (robots.txt disallows everything and
-//     the site is behind a login wall). A job comes only from the search
-//     result itself: its URL, title, snippet and date.
-//   - Ethiojobs: job pages are public and robots.txt allows them, so each
-//     candidate page is fetched (robots-gated) and the job is read from the
-//     page's embedded data, which carries an authoritative status, publish
-//     date and expiry.
+//   - Client (a per-company target, board token = company name) searches for
+//     one configured company's jobs;
+//   - FreshClient (a collector) runs a fixed set of keyword searches limited
+//     to the last day and collects whatever employers the results name.
 //
 // Web search matches text, not entities, so nothing a search returns is
-// trusted on its own. A result becomes a job only if a deterministic check
-// proves it belongs to the company: LinkedIn's URL slug ends in
-// "-at-<company>-<id>" and that company must equal one of the configured
-// names ("chapa-de-indian-health" is not "Chapa"), and an Ethiojobs page's
-// own company field must equal one too.
+// trusted on its own. For a configured company, a result becomes a job only
+// if LinkedIn's URL slug ends in "-at-<company>-<id>" and that company
+// equals one of the configured names ("chapa-de-indian-health" is not
+// "Chapa"); for every result an Ethiopia signal is required; and the posting
+// date is estimated from LinkedIn's job id, because the date Google shows is
+// often only the crawl date.
 //
-// A search shows a sample of a company's jobs, not all of them, so absence
-// from one run proves nothing. This client therefore declares StaleAfter:
-// ingestion closes its jobs only after they have gone unseen that long,
-// instead of on the first run that misses them.
+// A search shows a sample of jobs, not all of them, so absence from one run
+// proves nothing. Both clients therefore declare StaleAfter: ingestion closes
+// their jobs only after they have gone unseen that long, instead of on the
+// first run that misses them.
 package jobsearch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,10 +36,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 )
 
@@ -52,8 +48,6 @@ const (
 	// linkedInMaxAge is how old a LinkedIn result's date may be. LinkedIn
 	// postings are typically live for about a month.
 	linkedInMaxAge = 45 * 24 * time.Hour
-	// maxEthiojobsFetches bounds page fetches per company per run.
-	maxEthiojobsFetches = 10
 	// maxQueryNames bounds how many names go into one search query.
 	maxQueryNames = 4
 	// maxDescriptionRunes bounds one stored description.
@@ -68,11 +62,6 @@ var ErrBudgetExhausted = errors.New("jobsearch: search query budget exhausted")
 // Searcher runs a recency-limited web search (*search.Client).
 type Searcher interface {
 	SearchRecent(ctx context.Context, query string, recency search.Recency) ([]search.Result, error)
-}
-
-// Pages fetches and parses a page (*page.Fetcher).
-type Pages interface {
-	Fetch(ctx context.Context, rawURL string) (*page.Page, error)
 }
 
 // Company is one company the search client may be asked about.
@@ -114,7 +103,6 @@ func (b *Budget) Max() int { return int(b.max) }
 // Client lists jobs for companies via web search.
 type Client struct {
 	searcher  Searcher
-	pages     Pages
 	budget    *Budget
 	logger    *slog.Logger
 	now       func() time.Time
@@ -122,7 +110,6 @@ type Client struct {
 
 	searchMu   sync.Mutex
 	retryDelay time.Duration
-	pagePause  time.Duration // between successive Ethiojobs page fetches
 }
 
 type companyMatch struct {
@@ -131,9 +118,9 @@ type companyMatch struct {
 }
 
 // New returns a Client that can answer for the given companies.
-func New(searcher Searcher, pages Pages, companies []Company, budget *Budget, logger *slog.Logger) *Client {
-	c := &Client{searcher: searcher, pages: pages, budget: budget, logger: logger, now: time.Now,
-		retryDelay: 2 * time.Second, pagePause: 500 * time.Millisecond, companies: make(map[string]companyMatch, len(companies))}
+func New(searcher Searcher, companies []Company, budget *Budget, logger *slog.Logger) *Client {
+	c := &Client{searcher: searcher, budget: budget, logger: logger, now: time.Now,
+		retryDelay: 2 * time.Second, companies: make(map[string]companyMatch, len(companies))}
 	for _, co := range companies {
 		m := companyMatch{company: co, keys: map[string]bool{}}
 		for _, n := range append([]string{co.Name}, co.Aliases...) {
@@ -150,8 +137,10 @@ func New(searcher Searcher, pages Pages, companies []Company, budget *Budget, lo
 // see the package comment.
 func (c *Client) StaleAfter() time.Duration { return DefaultStaleAfter }
 
-// ListJobs searches LinkedIn and Ethiojobs for boardToken (a company name)
-// and returns the verified, current jobs. It spends two queries.
+// ListJobs searches LinkedIn for boardToken (a company name) and returns
+// the verified, current jobs. It spends one query. (Ethiojobs is not
+// searched here: internal/ats/ethiojobs reads that site directly and far
+// more freshly.)
 func (c *Client) ListJobs(ctx context.Context, boardToken string) ([]ats.Job, error) {
 	m, ok := c.companies[nameKey(boardToken)]
 	if !ok {
@@ -163,16 +152,11 @@ func (c *Client) ListJobs(ctx context.Context, boardToken string) ([]ats.Job, er
 	if err != nil {
 		return nil, err
 	}
-	ethiojobs, err := c.ethiojobsJobs(ctx, m, &stats)
-	if err != nil {
-		return nil, err
-	}
 
-	jobs := dedupeOpenings(append(ethiojobs, linkedIn...)) // Ethiojobs first: its records are richer
+	jobs := dedupeOpenings(linkedIn)
 	c.logger.Info("jobsearch: company searched",
 		"company", m.company.Name, "jobs", len(jobs),
 		"linkedin_results", stats.linkedInResults, "linkedin_open", len(linkedIn)-countClosed(linkedIn),
-		"ethiojobs_results", stats.ethiojobsResults, "ethiojobs_open", len(ethiojobs)-countClosed(ethiojobs),
 		"ended_reported", countClosed(jobs),
 		"skipped", stats.skipped, "queries_used", c.budget.Used(), "queries_max", c.budget.Max())
 	return jobs, nil
@@ -181,9 +165,8 @@ func (c *Client) ListJobs(ctx context.Context, boardToken string) ([]ats.Job, er
 // runStats counts what one ListJobs saw and why results were rejected, so
 // a "0 jobs" outcome can be told apart from "search found nothing".
 type runStats struct {
-	linkedInResults  int
-	ethiojobsResults int
-	skipped          map[string]int
+	linkedInResults int
+	skipped         map[string]int
 }
 
 func (s *runStats) skip(reason string) {
@@ -196,28 +179,42 @@ func (s *runStats) skip(reason string) {
 // search runs one query. Calls are serialized across all companies: the
 // ingester runs several targets at once, and Serper's HTTP/2 endpoint was
 // seen (live, 2 of 25 companies) resetting streams under that parallelism.
-// A transient failure is retried once after retryDelay; every attempt
-// spends budget, since a request that failed after Serper received it may
-// still have been billed. An expired or invalid key is not transient and
-// is never retried.
 func (c *Client) search(ctx context.Context, m companyMatch, site string) ([]search.Result, error) {
 	c.searchMu.Lock()
 	defer c.searchMu.Unlock()
 
 	q := searchQuery(m.company, site)
+	results, err := metered(ctx, c.budget, c.retryDelay, func() ([]search.Result, error) {
+		return c.searcher.SearchRecent(ctx, q, search.RecencyMonth)
+	})
+	if err != nil {
+		if errors.Is(err, ErrBudgetExhausted) || ctx.Err() != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("jobsearch: %s: %w", m.company.Name, err)
+	}
+	return results, nil
+}
+
+// metered runs one search under a query budget. A transient failure is
+// retried once after retryDelay; every attempt spends budget, since a
+// request that failed after Serper received it may still have been billed.
+// A canceled context and an expired or invalid key are not transient and are
+// never retried.
+func metered(ctx context.Context, budget *Budget, retryDelay time.Duration, do func() ([]search.Result, error)) ([]search.Result, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			select {
-			case <-time.After(c.retryDelay):
+			case <-time.After(retryDelay):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
 		}
-		if err := c.budget.Take(); err != nil {
+		if err := budget.Take(); err != nil {
 			return nil, err
 		}
-		results, err := c.searcher.SearchRecent(ctx, q, search.RecencyMonth)
+		results, err := do()
 		if err == nil {
 			return results, nil
 		}
@@ -226,7 +223,7 @@ func (c *Client) search(ctx context.Context, m companyMatch, site string) ([]sea
 			break
 		}
 	}
-	return nil, fmt.Errorf("jobsearch: %s: %w", m.company.Name, lastErr)
+	return nil, lastErr
 }
 
 // searchQuery quotes the company's names (OR-ed, at most maxQueryNames)
@@ -274,29 +271,51 @@ func (c *Client) linkedInJobs(ctx context.Context, m companyMatch, stats *runSta
 // linkedInJob turns one search result into a job, or returns why it was
 // rejected. Pure function of its inputs (no network, no clock but now).
 func linkedInJob(r search.Result, m companyMatch, now time.Time) (ats.Job, string) {
-	u, err := url.Parse(strings.TrimSpace(r.URL))
-	if err != nil {
-		return ats.Job{}, "bad-url"
-	}
-	u.RawQuery, u.Fragment = "", ""
-	match := linkedInURL.FindStringSubmatch(u.String())
-	if match == nil {
+	u, slug, id, ok := parseLinkedInURL(r.URL)
+	if !ok {
 		return ats.Job{}, "not-a-job-url"
 	}
-	slug, id := strings.ToLower(match[1]), match[2]
-
 	titleSlug, ok := splitCompanySlug(slug, m.keys)
 	if !ok {
 		return ats.Job{}, "other-company"
 	}
+	inEthiopia := ethiopiaSignal
+	if m.company.HiresOutsideEthiopia {
+		inEthiopia = func(string, string, search.Result) bool { return true }
+	}
+	return finishLinkedInJob(r, u, titleSlug, id, inEthiopia, now)
+}
 
+// parseLinkedInURL accepts only a LinkedIn job-view URL and returns it
+// without query or fragment, its lower-cased slug and its numeric id.
+func parseLinkedInURL(raw string) (u *url.URL, slug, id string, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, "", "", false
+	}
+	u.RawQuery, u.Fragment = "", ""
+	match := linkedInURL.FindStringSubmatch(u.String())
+	if match == nil {
+		return nil, "", "", false
+	}
+	return u, strings.ToLower(match[1]), match[2], true
+}
+
+// finishLinkedInJob applies the checks and mapping every LinkedIn result
+// goes through once its company is settled: ended postings become closure
+// markers, results without an Ethiopia signal are rejected (unless the
+// company hires outside Ethiopia), and the posting date is estimated from
+// the id. inEthiopia decides the Ethiopia check: the per-company client
+// (whose company match already narrows things) and the keyword collector
+// (where nothing does) need different strictness.
+func finishLinkedInJob(r search.Result, u *url.URL, titleSlug, id string, inEthiopia func(host, location string, r search.Result) bool, now time.Time) (ats.Job, string) {
 	// The result itself says the job has ended: report it as closed, so an
 	// open row for it is closed now rather than after the stale window.
 	if strings.Contains(strings.ToLower(r.Snippet), "no longer accepting applications") {
 		return ats.Job{ExternalID: "linkedin:" + id, Closed: true}, ""
 	}
 	location := linkedInLocation(r)
-	if !m.company.HiresOutsideEthiopia && !ethiopiaSignal(u.Host, location, r) {
+	if !inEthiopia(u.Host, location, r) {
 		return ats.Job{}, "outside-ethiopia"
 	}
 	// Age. Google's date beside a result is often the day it crawled the
@@ -326,7 +345,7 @@ func linkedInJob(r search.Result, m companyMatch, now time.Time) (ats.Job, strin
 		ExternalID:  "linkedin:" + id,
 		Title:       title,
 		URL:         u.String(),
-		LocationRaw: location,
+		LocationRaw: linkedInLocation(r),
 		Description: ats.CleanText(r.Snippet),
 		PublishedAt: published,
 	}, ""
@@ -389,26 +408,40 @@ func ethiopiaSignal(host, location string, r search.Result) bool {
 	if strings.EqualFold(host, "et.linkedin.com") {
 		return true
 	}
-	text := strings.ToLower(location + " " + r.Snippet + " " + r.Title)
-	return strings.Contains(text, "ethiopia") || strings.Contains(text, "addis ababa") || strings.Contains(text, "addis abeba")
+	// The location is parsed (a bare "Addis" is fine there); the snippet and
+	// title are free text, where "Addis" may be part of a company name.
+	return companymatch.InEthiopia(location) || companymatch.InEthiopiaText(r.Snippet+" "+r.Title)
 }
 
 var (
 	snippetLocation = regexp.MustCompile(`(?i)\bat .{1,120}? in ([^.]{2,80})\.`)
 	titleLocation   = regexp.MustCompile(`(?i)\bhiring .+? in ([^|]{2,80}?)\s*(?:\||$)`)
+	alertLocation   = regexp.MustCompile(`(?i)\bget notified about new .{1,120}? jobs in ([^.]{2,80})\.`)
 )
 
 // linkedInLocation extracts the location LinkedIn puts in its result text:
-// "... at Chapa in Ethiopia. Full-time ..." or "Chapa hiring X in Ethiopia
-// | LinkedIn". Best effort; "" when neither shape matches.
+// "... at Chapa in Ethiopia. Full-time ...", "Chapa hiring X in Ethiopia
+// | LinkedIn" or "Get notified about new X jobs in Addis Ababa, Ethiopia."
+// Best effort; "" when no shape matches, or when the text was cut off with
+// an ellipsis (a truncated "Adis ..." says nothing).
 func linkedInLocation(r search.Result) string {
-	if m := snippetLocation.FindStringSubmatch(r.Snippet); m != nil {
-		return ats.CleanText(m[1])
+	for _, m := range []*regexp.Regexp{snippetLocation, alertLocation} {
+		if match := m.FindStringSubmatch(r.Snippet); match != nil {
+			return cleanLocation(match[1])
+		}
 	}
 	if m := titleLocation.FindStringSubmatch(r.Title); m != nil {
-		return ats.CleanText(m[1])
+		return cleanLocation(m[1])
 	}
 	return ""
+}
+
+func cleanLocation(s string) string {
+	s = ats.CleanText(s)
+	if strings.HasSuffix(s, "...") || strings.HasSuffix(s, "\u2026") {
+		return ""
+	}
+	return s
 }
 
 // prettyTitle restores the real capitalization and punctuation of a job
@@ -437,245 +470,62 @@ func prettyTitle(titleSlug, resultTitle string) string {
 	return ats.CleanText(strings.Join(parts, " "))
 }
 
-// slugify lower-cases s and collapses every run of non-alphanumeric
-// characters into a single dash, trimming leading and trailing dashes.
-func slugify(s string) string {
-	var b strings.Builder
-	dash := true
-	for _, r := range strings.ToLower(s) {
-		if r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
-			b.WriteRune(r)
-			dash = false
-		} else if !dash {
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	return strings.TrimSuffix(b.String(), "-")
-}
-
-// ---- Ethiojobs ----
-
-var ethiojobsURL = regexp.MustCompile(`^https://ethiojobs\.net/job/([A-Za-z0-9]{6,16})-[a-z0-9-]+/?$`)
-
-// ethiojobsData is the part of a job page's __NEXT_DATA__ this client reads.
-type ethiojobsData struct {
-	Props struct {
-		PageProps struct {
-			Data struct {
-				Title         string `json:"title"`
-				Description   string `json:"description"`
-				Requirement   string `json:"requirement"`
-				HowToApply    string `json:"how_to_apply"`
-				Status        string `json:"status"`
-				DatePublished string `json:"date_published"`
-				DateExpiry    string `json:"date_expiry"`
-				City          string `json:"city"`
-				State         string `json:"state"`
-				Company       struct {
-					Name string `json:"name"`
-				} `json:"company"`
-			} `json:"data"`
-		} `json:"pageProps"`
-	} `json:"props"`
-}
-
-func (c *Client) ethiojobsJobs(ctx context.Context, m companyMatch, stats *runStats) ([]ats.Job, error) {
-	results, err := c.search(ctx, m, "ethiojobs.net/job")
-	if err != nil {
-		return nil, err
-	}
-	stats.ethiojobsResults = len(results)
-
-	var jobs []ats.Job
-	fetches := 0
-	for _, r := range results {
-		u, err := url.Parse(strings.TrimSpace(r.URL))
-		if err != nil {
-			stats.skip("ethiojobs:bad-url")
-			continue
-		}
-		u.RawQuery, u.Fragment = "", ""
-		match := ethiojobsURL.FindStringSubmatch(u.String())
-		if match == nil {
-			stats.skip("ethiojobs:not-a-job-url")
-			continue
-		}
-		if fetches >= maxEthiojobsFetches {
-			stats.skip("ethiojobs:fetch-cap")
-			continue
-		}
-		// Be polite to a small site: successive job-page fetches are spaced.
-		if fetches > 0 && c.pagePause > 0 {
-			select {
-			case <-time.After(c.pagePause):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-		fetches++
-
-		p, err := c.pages.Fetch(ctx, u.String())
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			stats.skip("ethiojobs:fetch-failed")
-			c.logger.Warn("jobsearch: ethiojobs page not fetched", "url", u.String(), "error", err)
-			continue
-		}
-		job, reason := ethiojobsJob(p, match[1], u.String(), m, c.now())
-		if reason != "" {
-			stats.skip("ethiojobs:" + reason)
-			continue
-		}
-		jobs = append(jobs, job)
-	}
-	return jobs, nil
-}
-
-// ethiojobsJob reads one fetched Ethiojobs job page, or returns why it is
-// not a current job of this company.
-func ethiojobsJob(p *page.Page, id, jobURL string, m companyMatch, now time.Time) (ats.Job, string) {
-	raw := p.Scripts["__NEXT_DATA__"]
-	if raw == "" {
-		return ats.Job{}, "no-data"
-	}
-	var doc ethiojobsData
-	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-		return ats.Job{}, "bad-data"
-	}
-	d := doc.Props.PageProps.Data
-
-	// Whose posting is it? Checked first: nothing below is acted on for
-	// another company's page.
-	if !m.keys[nameKey(d.Company.Name)] {
-		return ats.Job{}, "other-company"
-	}
-
-	// Allowlist, not blocklist: only a posting the site itself marks active
-	// is shown. Verified live: open postings say "active", ended ones
-	// "closed". An ended posting (closed, or past its expiry) is returned as
-	// a closure so an already-stored copy is closed at once; any other
-	// status is not trusted either way.
-	published, expiry := page.ParseDate(d.DatePublished), page.ParseDate(d.DateExpiry)
-	ended := ats.Job{ExternalID: "ethiojobs:" + id, Closed: true}
-	if d.Status == "closed" {
-		return ended, ""
-	}
-	if d.Status != "active" {
-		return ats.Job{}, "not-active"
-	}
-	if !expiry.IsZero() && !expiry.After(now) {
-		return ended, ""
-	}
-	if expiry.IsZero() && (published.IsZero() || now.Sub(published) > linkedInMaxAge) {
-		return ats.Job{}, "no-expiry-and-old"
-	}
-	title := ats.CleanText(d.Title)
-	if title == "" {
-		return ats.Job{}, "no-title"
-	}
-
-	var parts []string
-	for _, h := range []string{d.Description, d.Requirement, d.HowToApply} {
-		if t := ats.HTMLToText(h); t != "" {
-			parts = append(parts, t)
-		}
-	}
-	return ats.Job{
-		ExternalID:  "ethiojobs:" + id,
-		Title:       title,
-		URL:         jobURL,
-		LocationRaw: joinLocation(d.City, d.State),
-		Description: truncateRunes(strings.Join(parts, "\n\n"), maxDescriptionRunes),
-		PublishedAt: published,
-	}, ""
-}
-
-func joinLocation(city, state string) string {
-	city, state = ats.CleanText(city), ats.CleanText(state)
-	switch {
-	case city == "" || strings.EqualFold(city, state):
-		return state
-	case state == "":
-		return city
-	}
-	return city + ", " + state
-}
-
 // ---- shared ----
 
-// corporateSuffixes are trailing name tokens that differ between how a
-// company writes its own name and how a job site does ("Ethswitch S.C.",
-// "Kifiya Financial Technology PLC", "Gebeya Inc.").
-var corporateSuffixes = map[string]bool{"inc": true, "plc": true, "sc": true, "s": true, "c": true, "ltd": true,
-	"llc": true, "pvt": true, "co": true, "company": true, "limited": true, "corp": true, "corporation": true,
-	"sa": true, "gmbh": true, "et": true, "ethiopia": true}
-
-// nameKey reduces a company name to a comparison key: lower-case ASCII
-// words joined by dashes, with trailing corporate-form words dropped (but
-// never all of them). "Ethswitch S.C." and "EthSwitch" share a key;
-// "Chaka Gebeya" and "Gebeya Inc." do not.
-func nameKey(name string) string {
-	tokens := strings.Split(slugify(name), "-")
-	for len(tokens) > 1 && corporateSuffixes[tokens[len(tokens)-1]] {
-		tokens = tokens[:len(tokens)-1]
-	}
-	return strings.Join(tokens, "-")
-}
+// The comparison rules live in internal/companymatch so every source that
+// matches employer names does it the same way.
+var (
+	nameKey  = companymatch.Key
+	slugify  = companymatch.Slug
+	titleKey = companymatch.TitleKey
+)
 
 // dedupeOpenings drops a later job that is the same opening as an earlier
-// one: the same title (case-insensitively) in the same place. The same
-// opening is often posted on both sites; the same title in a different
+// one: the same employer (empty for a per-company client, where every job has
+// the same one), the same title (case-insensitively) and the same place, as
+// companymatch.SamePlace defines it. The same opening is often posted on both
+// sites; the same title in a different city (Addis Ababa and Hawassa) or
 // country (Addis Ababa and Nairobi) is a different opening and both stay.
-// "Same place" is deliberately coarse, because the sites word locations
-// differently ("Addis Ababa" vs "Ethiopia"): a location is Ethiopian when it
-// is empty or names Ethiopia or Addis Ababa, and otherwise only equal
-// locations match. Closed markers are never dropped. Callers order the input
-// so the richer record comes first.
+// Closed markers are never dropped. Callers order the input so the richer
+// record comes first.
 //
 // A duplicate that is dropped is replaced by a closure marker for its own
 // id: a copy stored on an earlier run (before the other site's copy was
 // found) would otherwise stay open beside the kept one until the stale
 // window ran out, showing the same opening twice.
 func dedupeOpenings(jobs []ats.Job) []ats.Job {
-	seen := map[string]bool{}
+	// Two passes so the outcome does not depend on result order: SamePlace is
+	// not transitive (a location with no city matches every Ethiopian city,
+	// which do not match each other), so jobs naming a city are settled first,
+	// among themselves, and city-less ones are then compared with everything
+	// kept.
+	kept := map[string][]string{} // employer|title -> locations kept
+	drop := make([]bool, len(jobs))
+	for _, cityPass := range []bool{true, false} {
+		for i, j := range jobs {
+			if j.Closed || companymatch.HasCity(j.LocationRaw) != cityPass {
+				continue
+			}
+			k := nameKey(j.Employer) + "|" + titleKey(j.Title)
+			for _, loc := range kept[k] {
+				if companymatch.SamePlace(loc, j.LocationRaw) {
+					drop[i] = true
+					break
+				}
+			}
+			if !drop[i] {
+				kept[k] = append(kept[k], j.LocationRaw)
+			}
+		}
+	}
 	out := jobs[:0:0]
-	for _, j := range jobs {
-		if j.Closed {
-			out = append(out, j)
-			continue
+	for i, j := range jobs {
+		if drop[i] {
+			j = ats.Job{ExternalID: j.ExternalID, Employer: j.Employer, Closed: true}
 		}
-		k := titleKey(j.Title) + "|" + placeClass(j.LocationRaw)
-		if seen[k] {
-			out = append(out, ats.Job{ExternalID: j.ExternalID, Closed: true})
-			continue
-		}
-		seen[k] = true
 		out = append(out, j)
 	}
 	return out
-}
-
-// titleKey is a comparison key for a job title: lower-cased, with every run
-// of characters that are not letters, digits, '#' or '+' collapsed to one
-// space. Unlike slugify it keeps non-ASCII letters (Amharic titles must not
-// all collapse to "") and the characters that make "C# Developer",
-// "C++ Developer" and "C Developer" three different jobs.
-func titleKey(title string) string {
-	var b strings.Builder
-	space := true
-	for _, r := range strings.ToLower(title) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '#' || r == '+' {
-			b.WriteRune(r)
-			space = false
-		} else if !space {
-			b.WriteByte(' ')
-			space = true
-		}
-	}
-	return strings.TrimSuffix(b.String(), " ")
 }
 
 func countClosed(jobs []ats.Job) int {
@@ -686,16 +536,6 @@ func countClosed(jobs []ats.Job) int {
 		}
 	}
 	return n
-}
-
-// placeClass reduces a location string to "et" (Ethiopian or unknown) or
-// its own lower-cased text.
-func placeClass(location string) string {
-	l := strings.ToLower(strings.TrimSpace(location))
-	if l == "" || strings.Contains(l, "ethiopia") || strings.Contains(l, "addis") {
-		return "et"
-	}
-	return l
 }
 
 var relativeDate = regexp.MustCompile(`(?i)^(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago$`)

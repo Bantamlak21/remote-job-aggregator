@@ -109,6 +109,10 @@ type Result struct {
 	Skipped   int
 	Removed   int
 	Err       error
+
+	// stored holds the source ids of the jobs this run actually wrote
+	// (collectors use it to know which openings are already stored).
+	stored map[string]bool
 }
 
 // Ingester fetches and persists jobs for every active target, using a
@@ -129,6 +133,7 @@ type Ingester struct {
 	workers        int
 	logger         *slog.Logger
 	now            func() time.Time
+	collectors     CollectorConfig
 }
 
 // maxFuturePublishedAt is how far ahead of now a publish date may be
@@ -235,9 +240,27 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 		return Result{Target: t, Err: fmt.Errorf("ingestion: fetching %s/%s: %w", t.ATSProvider, t.ExternalBoardID, err)}
 	}
 
+	var staleAfter time.Duration
+	if pc, ok := client.(PartialClient); ok {
+		staleAfter = pc.StaleAfter()
+	}
+	return in.persist(ctx, t, atsJobs, staleAfter)
+}
+
+// persist stores what a source returned for target t and closes what the
+// source no longer lists. It is shared by per-target ingestion (processTarget)
+// and multi-employer collectors (RunCollectors): the rules for skipping bad
+// jobs, closing ended ones and recording success are the same for both.
+//
+// staleAfter > 0 marks the listing as a sample (see PartialClient): jobs
+// missing from it are not closed, only those unseen for staleAfter.
+// staleAfter <= 0 is a full board: anything missing is closed.
+func (in *Ingester) persist(ctx context.Context, t company.TargetCompany, atsJobs []ats.Job, staleAfter time.Duration) Result {
+	var err error
 	seenIDs := make([]string, 0, len(atsJobs))
 	var endedIDs []string
 	var inserted, changed, unchanged, skipped int
+	storedIDs := make(map[string]bool, len(atsJobs))
 	latestPlausible := in.now().Add(maxFuturePublishedAt)
 	for _, aj := range atsJobs {
 		// A job the source itself reports as ended is not stored; any open
@@ -282,7 +305,7 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 			// index — setting it from the job URL let one reposted or
 			// duplicated URL abort a whole board's ingestion forever.
 			Title: aj.Title, Description: aj.Description,
-			ApplicationURL: aj.URL, LocationRaw: aj.LocationRaw, PublishedAt: aj.PublishedAt,
+			ApplicationURL: aj.URL, LocationRaw: aj.LocationRaw, PublishedAt: aj.PublishedAt, ExpiresAt: aj.ExpiresAt,
 		})
 		if err != nil {
 			// A job the database refused (bad data) is skipped and logged;
@@ -297,6 +320,7 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 			return Result{Target: t, Inserted: inserted, Changed: changed, Unchanged: unchanged, Skipped: skipped,
 				Err: fmt.Errorf("ingestion: upserting %s/%s job %s: %w", t.ATSProvider, t.ExternalBoardID, aj.ExternalID, err)}
 		}
+		storedIDs[aj.ExternalID] = true
 		switch {
 		case outcome.Inserted:
 			inserted++
@@ -317,8 +341,8 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 		removed += closed
 	}
 	var closedByRule int
-	if pc, ok := client.(PartialClient); ok && pc.StaleAfter() > 0 {
-		closedByRule, err = in.jobs.CloseStale(ctx, t.ID, pc.StaleAfter())
+	if staleAfter > 0 {
+		closedByRule, err = in.jobs.CloseStale(ctx, t.ID, staleAfter)
 	} else {
 		closedByRule, err = in.jobs.MarkMissingAsRemoved(ctx, t.ID, seenIDs)
 	}
@@ -333,7 +357,7 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 			"target_id", t.ID, "error", err)
 	}
 
-	return Result{Target: t, Inserted: inserted, Changed: changed, Unchanged: unchanged, Skipped: skipped, Removed: removed}
+	return Result{Target: t, Inserted: inserted, Changed: changed, Unchanged: unchanged, Skipped: skipped, Removed: removed, stored: storedIDs}
 }
 
 // retireGoneBoard deactivates a target whose board the ATS reports as

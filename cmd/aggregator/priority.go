@@ -12,11 +12,13 @@ import (
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/careers"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/ethiojobs"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/feed"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/greenhouse"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/jobsearch"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/database"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/httpclient"
@@ -26,7 +28,25 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 )
 
-const defaultPriorityFile = "configs/ethiopian_companies.json"
+const (
+	defaultPriorityFile        = "configs/ethiopian_companies.json"
+	defaultLinkedInQueriesFile = "configs/linkedin_queries.json"
+)
+
+// The many-employer collectors, in the order they run: Ethiojobs first, so
+// an opening both sites list is stored with Ethiojobs' full description
+// rather than LinkedIn's search snippet. Each name is also the ats_provider
+// of the targets it creates.
+const (
+	collectorEthiojobs = "ethiojobs"
+	collectorLinkedIn  = "linkedin"
+)
+
+var collectorOrder = []string{collectorEthiojobs, collectorLinkedIn}
+
+// listingFetchPause is the delay between successive listing-page fetches of
+// a job board.
+const listingFetchPause = 500 * time.Millisecond
 
 // detailFetchPause is the delay between successive job-page fetches on one
 // company's careers site: small company sites should not see a burst.
@@ -42,59 +62,119 @@ func productToken(userAgent string) string {
 }
 
 // ingestSources is everything runIngest needs to fetch from every source:
-// a client per ats_provider, the providers that run by default, and the
-// search budget (nil when the search source is unavailable).
+// a client per ats_provider (one company's board each), a collector per
+// many-employer source (see ingestion.Collector), the providers that run by
+// default, and the search budget (nil when no search-backed source is
+// available).
 type ingestSources struct {
 	clients          map[string]ingestion.ATSClient
+	collectors       map[string]ingestion.Collector
 	defaultProviders []string
 	budget           *jobsearch.Budget
+	// resolver maps an employer name from a job site to a priority company;
+	// nil when the priority list could not be loaded.
+	resolver ingestion.EmployerResolver
 }
 
 // newIngestSources builds one client per source, all sharing one pooled
-// HTTP client and one robots.txt checker. The search-backed source needs
-// two things the others do not: a Serper key and the priority company list
-// (its names and aliases are how a search result is proven to belong to
-// the company). Without either, that source is left out and its targets are
-// skipped rather than reported as failures.
-func newIngestSources(cfg *config.Config, httpClient *httpclient.Client, priorityFile string, logger *slog.Logger) ingestSources {
+// HTTP client and one robots.txt checker. The search-backed sources need
+// a Serper key, and the per-company one also needs the priority company
+// list (its names and aliases are how a search result is proven to belong to
+// the company). Without them, those sources are left out and their targets
+// are skipped rather than reported as failures.
+func newIngestSources(cfg *config.Config, httpClient *httpclient.Client, priorityFile, queriesFile string, logger *slog.Logger) ingestSources {
 	robotsChecker := robots.New(httpClient, productToken(cfg.HTTP.UserAgent))
 	pages := page.NewFetcher(httpClient, robotsChecker)
 
-	s := ingestSources{clients: map[string]ingestion.ATSClient{
-		string(ats.ProviderGreenhouse):  greenhouse.New(httpClient),
-		string(ats.ProviderFeed):        feed.New(httpClient, robotsChecker, 0),
-		string(ats.ProviderCareersSite): careers.New(pages, 0, 0, detailFetchPause),
-	}}
-
-	switch {
-	case !cfg.Search.Configured():
-		logger.Info("search-backed job source disabled: SERPER_API_KEY is not set")
-	default:
-		list, err := priority.Load(priorityFile)
-		if err != nil {
-			logger.Warn("search-backed job source disabled: cannot load the priority company list", "error", err)
-			break
-		}
-		companies := make([]jobsearch.Company, len(list.Companies))
-		for i, e := range list.Companies {
-			companies[i] = jobsearch.Company{Name: e.Name, Aliases: e.Aliases, HiresOutsideEthiopia: e.HiresOutsideEthiopia}
-		}
-		s.budget = jobsearch.NewBudget(cfg.Search.MaxQueriesPerRun)
-		searchClient := search.New(httpClient, search.Config{APIKey: cfg.Search.SerperAPIKey})
-		s.clients[string(ats.ProviderSearch)] = jobsearch.New(searchClient, pages, companies, s.budget, logger)
+	s := ingestSources{
+		clients: map[string]ingestion.ATSClient{
+			string(ats.ProviderGreenhouse):  greenhouse.New(httpClient),
+			string(ats.ProviderFeed):        feed.New(httpClient, robotsChecker, 0),
+			string(ats.ProviderCareersSite): careers.New(pages, 0, 0, detailFetchPause),
+		},
+		collectors: map[string]ingestion.Collector{
+			collectorEthiojobs: ethiojobs.New(pages, cfg.Ingestion.EthiojobsMaxPages, 0, listingFetchPause, logger),
+		},
 	}
 
-	// The search source spends a fixed, non-renewing Serper allowance (50
-	// queries a run), so it never runs by default: a plain daily "ingest"
-	// would exhaust the free 2,500 in about 50 days. It runs only when
-	// asked for by name (--providers=search).
+	list, listErr := priority.Load(priorityFile)
+	if listErr != nil {
+		logger.Warn("priority company list unavailable: priority companies are not recognized in collected jobs and the per-company search source is disabled", "error", listErr)
+	} else {
+		entries := make([]companymatch.Entry, len(list.Companies))
+		for i, e := range list.Companies {
+			entries[i] = companymatch.Entry{Name: e.Name, Aliases: e.Aliases}
+		}
+		s.resolver = companymatch.NewMatcher(entries)
+	}
+
+	if !cfg.Search.Configured() {
+		logger.Info("search-backed job sources disabled: SERPER_API_KEY is not set")
+	} else {
+		s.budget = jobsearch.NewBudget(cfg.Search.MaxQueriesPerRun)
+		searchClient := search.New(httpClient, search.Config{APIKey: cfg.Search.SerperAPIKey})
+
+		if listErr == nil {
+			companies := make([]jobsearch.Company, len(list.Companies))
+			for i, e := range list.Companies {
+				companies[i] = jobsearch.Company{Name: e.Name, Aliases: e.Aliases, HiresOutsideEthiopia: e.HiresOutsideEthiopia}
+			}
+			s.clients[string(ats.ProviderSearch)] = jobsearch.New(searchClient, companies, s.budget, logger)
+		}
+
+		fresh, err := jobsearch.LoadFreshConfig(queriesFile)
+		if err != nil {
+			logger.Warn("LinkedIn keyword source disabled: cannot load its keyword list", "error", err)
+		} else {
+			if fresh.Queries() > s.budget.Max() {
+				logger.Warn("the LinkedIn keyword list needs more queries than SEARCH_MAX_QUERIES_PER_RUN allows; the last keywords will not run",
+					"queries_needed", fresh.Queries(), "limit", s.budget.Max())
+			}
+			priorityProvider := ""
+			if listErr == nil {
+				priorityProvider = string(ats.ProviderSearch)
+			}
+			s.collectors[collectorLinkedIn] = jobsearch.NewFresh(searchClient, fresh, s.budget, priorityProvider, logger)
+		}
+	}
+
+	// The Serper-backed sources spend a fixed, non-renewing allowance, so they
+	// never run by default: a plain daily "ingest" would exhaust the free
+	// 2,500 queries in weeks. They run only when asked for by name
+	// (--providers=search, --providers=linkedin). Ethiojobs is free and runs
+	// by default.
 	for p := range s.clients {
 		if p != string(ats.ProviderSearch) {
 			s.defaultProviders = append(s.defaultProviders, p)
 		}
 	}
+	s.defaultProviders = append(s.defaultProviders, collectorEthiojobs)
 	slices.Sort(s.defaultProviders)
 	return s
+}
+
+// hasProvider reports whether name is an ATS provider or a collector.
+func (s ingestSources) hasProvider(name string) bool {
+	_, isClient := s.clients[name]
+	_, isCollector := s.collectors[name]
+	return isClient || isCollector
+}
+
+// splitProviders separates chosen provider names into ATS providers (run
+// per target by Ingester.Run) and collector names (run by
+// Ingester.RunCollectors, in collectorOrder).
+func splitProviders(chosen []string, s ingestSources) (atsProviders, collectorNames []string) {
+	for _, p := range chosen {
+		if _, ok := s.collectors[p]; !ok {
+			atsProviders = append(atsProviders, p)
+		}
+	}
+	for _, c := range collectorOrder {
+		if slices.Contains(chosen, c) {
+			collectorNames = append(collectorNames, c)
+		}
+	}
+	return atsProviders, collectorNames
 }
 
 // parseIngestArgs reads ingest's only option, --providers=a,b,c. nil
@@ -119,7 +199,7 @@ func parseIngestArgs(args []string) ([]string, error) {
 		}
 		return out, nil
 	}
-	return nil, errors.New("ingest: usage: ingest [--providers=greenhouse,feed,careers-site,search]")
+	return nil, errors.New("ingest: usage: ingest [--providers=greenhouse,feed,careers-site,ethiojobs,search,linkedin]")
 }
 
 // chooseProviders resolves the requested providers against the ones that
@@ -132,18 +212,21 @@ func chooseProviders(requested []string, s ingestSources) ([]string, error) {
 	}
 	var unavailable []string
 	for _, p := range requested {
-		if _, ok := s.clients[p]; !ok {
+		if !s.hasProvider(p) {
 			unavailable = append(unavailable, p)
 		}
 	}
 	if len(unavailable) > 0 {
-		available := make([]string, 0, len(s.clients))
+		var available []string
 		for p := range s.clients {
 			available = append(available, p)
 		}
+		for p := range s.collectors {
+			available = append(available, p)
+		}
 		slices.Sort(available)
-		return nil, fmt.Errorf("ingest: no client for provider(s) %s (available: %s; search needs SERPER_API_KEY and %s)",
-			strings.Join(unavailable, ", "), strings.Join(available, ", "), defaultPriorityFile)
+		return nil, fmt.Errorf("ingest: no client for provider(s) %s (available: %s; search needs SERPER_API_KEY and %s, linkedin needs SERPER_API_KEY and %s)",
+			strings.Join(unavailable, ", "), strings.Join(available, ", "), defaultPriorityFile, defaultLinkedInQueriesFile)
 	}
 	return requested, nil
 }
