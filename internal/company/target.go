@@ -215,6 +215,71 @@ func (s *TargetStore) GetByProviderAndBoard(ctx context.Context, provider, board
 	return t, nil
 }
 
+const listActiveTargetsQuery = `SELECT ` + targetColumns + `
+	FROM target_companies WHERE is_active = true ORDER BY id`
+
+// ListActive returns every target company ingestion should fetch —
+// is_active = true, ordered by id for a stable, testable sequence.
+// Ordering by last_successful_ingestion_at (staler targets first) would
+// be a reasonable refinement once there are enough active targets for
+// fetch order to matter; not needed yet.
+func (s *TargetStore) ListActive(ctx context.Context) ([]TargetCompany, error) {
+	rows, err := s.pool.Query(ctx, listActiveTargetsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("company: list active targets: %w", err)
+	}
+	defer rows.Close()
+
+	var targets []TargetCompany
+	for rows.Next() {
+		t, err := scanTarget(rows)
+		if err != nil {
+			return nil, fmt.Errorf("company: list active targets: %w", err)
+		}
+		targets = append(targets, *t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("company: list active targets: %w", err)
+	}
+	return targets, nil
+}
+
+const markIngestionSucceededQuery = `
+	UPDATE target_companies SET last_successful_ingestion_at = now() WHERE id = $1`
+
+// MarkIngestionSucceeded records that ingestion just fetched this
+// target's board successfully — independent of whether any individual
+// job's content actually changed; "succeeded" means the fetch itself
+// worked, not that new data resulted.
+func (s *TargetStore) MarkIngestionSucceeded(ctx context.Context, id int64) error {
+	tag, err := s.pool.Exec(ctx, markIngestionSucceededQuery, id)
+	if err != nil {
+		return fmt.Errorf("company: marking ingestion succeeded for target %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("company: marking ingestion succeeded for target %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+const setTargetActiveQuery = `UPDATE target_companies SET is_active = $2 WHERE id = $1`
+
+// SetActive flips a target's is_active flag. Ingestion uses this to
+// deactivate a target when its board returns a definitive "gone" signal
+// (e.g. a 404 board-not-found from the ATS) — a clear, permanent signal,
+// unlike a transient network/5xx error, which leaves is_active alone so
+// a temporary outage doesn't silently stop future ingestion attempts.
+func (s *TargetStore) SetActive(ctx context.Context, id int64, active bool) error {
+	tag, err := s.pool.Exec(ctx, setTargetActiveQuery, id, active)
+	if err != nil {
+		return fmt.Errorf("company: setting target %d active=%t: %w", id, active, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("company: setting target %d active=%t: %w", id, active, ErrNotFound)
+	}
+	return nil
+}
+
 // scanTarget reads one row in targetColumns order. discovery_metadata is
 // scanned as raw bytes and decoded here rather than letting pgx decode
 // straight into the map, so a malformed value reports which column it

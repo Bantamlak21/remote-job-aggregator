@@ -50,6 +50,9 @@ aggregator discover [seed-file]       # validate candidate ATS boards from a see
 aggregator search-discover [names-file]  # find each company's ATS board via the Serper
                                        # search API (default configs/company_names.txt),
                                        # then the same validate-and-persist as discover
+aggregator ingest                     # fetch jobs from every active target's ATS board
+                                       # (Greenhouse today), upsert them, and close out
+                                       # jobs that disappeared from the board
 aggregator serve                      # start the public, read-only job API (see docs/api.md)
 ```
 
@@ -109,6 +112,10 @@ raw credential even when the value itself was the problem.
 | `SERPER_API_KEY` | no | — | only for `search-discover`; from https://serper.dev/api-keys |
 | `API_ADDR` | no | `:8080` | only for `serve`; must be a valid `host:port` |
 | `CORS_ALLOWED_ORIGIN` | no | `http://localhost:5173` | only for `serve`; a single explicit origin, never `*` |
+| `JOB_REPOSITORY` | no | `postgres` | only for `serve`; `postgres` (real ingested jobs) or `mock` (12 fixture jobs, no database) |
+| `INGESTION_WORKERS` | no | `5` | bounded concurrency for `ingest` (one ATS board per worker); 1 – 100 |
+| `INGESTION_MAX_RESPONSE_SIZE` | no | `33554432` (32 MiB) | bytes; `ingest`'s own response cap, separate from `HTTP_MAX_RESPONSE_SIZE` because big boards exceed 5 MiB (databricks: 9.7 MB); must be positive |
+| `INGESTION_HTTP_TIMEOUT` | no | `30s` | whole-round-trip budget for `ingest`'s HTTP client; must be positive |
 | `TEST_DATABASE_URL` | no | — | integration tests only; database name must end in `_test` |
 
 Config values passed via `DATABASE_URL`'s own query string (e.g.
@@ -260,12 +267,18 @@ aggregator serve   # http://localhost:8080/api/v1/jobs
 ```
 
 Public, read-only JSON API backing a job-board frontend — full contract in
-[docs/api.md](docs/api.md). Today it serves 12 illustrative fixture jobs from
-`internal/job.MockRepository`, since Phase 3 (ATS ingestion) hasn't shipped a real
-`jobs` table yet. `internal/api` depends only on the `job.Repository` interface, never
-`MockRepository` directly — swapping in a real Postgres-backed implementation later is a
-one-line change in `runServe` (`cmd/aggregator/main.go`), with no handler, routing, or
-frontend change required.
+[docs/api.md](docs/api.md). By default (`JOB_REPOSITORY=postgres`) it serves the real jobs
+`aggregator ingest` has stored — only `open` ones; jobs that disappeared from their board
+are `removed` and never shown. `JOB_REPOSITORY=mock` serves 12 illustrative fixture jobs
+from `internal/job.MockRepository` with no database, for frontend development.
+`internal/api` depends only on the `job.Repository` interface, never a concrete type.
+
+Typical local flow: `migrate-up`, `search-discover` (find boards), `ingest` (fetch jobs),
+`serve`. `ingest` only has a client for Greenhouse today: targets on Lever or Ashby (which
+`search-discover` also finds) are reported as `no ATS client registered` on every run until
+those providers are added. If a board's ATS reports it gone (404), `ingest` deactivates the
+target and closes its jobs; re-running discovery reactivates it. Every ingested job's `remote_type`/`employment_type` is `unknown` and `tags` is
+empty — Greenhouse's public API has neither, and classifying them is a later phase's job.
 
 CORS is a single explicit allowed origin (`CORS_ALLOWED_ORIGIN`, default matching Vite's
 dev server), never a wildcard.
@@ -323,10 +336,18 @@ Modular monolith, one deployable binary. Package boundaries so far:
   logic (HEAD/GET fallback, concurrency bound, error propagation, URL
   pattern matching) is tested with fakes instead of a database or a real
   API key.
-- `internal/job` — the normalized `Job` type and the `Repository`
-  interface `internal/api` depends on. `MockRepository` (deterministic
-  fixture data) is the only implementation today; a real Postgres-backed
-  one arrives with Phase 3 and is a drop-in swap, not a rewrite.
+- `internal/ats` — the provider-agnostic `ats.Job` shape every ATS client
+  normalizes into, `ats.ErrBoardNotFound`, and `HTMLToText` (real HTML
+  parsing via `golang.org/x/net/html`, not regex). `internal/ats/greenhouse`
+  is the first provider (Greenhouse's public Job Board API, no key needed).
+- `internal/job` — the normalized `Job` type, the `Repository` interface
+  `internal/api` depends on, `Store` (real Postgres: upsert by
+  `(source, source_job_id)` with content-hash change detection, and
+  closing out jobs that vanished from a board), and `MockRepository`
+  (fixture data for frontend development).
+- `internal/ingestion` — bounded worker pool: one target board per worker,
+  per-target error isolation; a board-not-found deactivates the target, a
+  transient error never does, and a failed fetch never closes out jobs.
 - `internal/api` — the public, read-only job API (`serve`). Routing,
   JSON encoding, CORS, and request logging over `job.Repository` — never
   a concrete repository type. Full contract in [docs/api.md](docs/api.md).
@@ -336,9 +357,9 @@ Modular monolith, one deployable binary. Package boundaries so far:
   `search-discover`).
 - `cmd/aggregator` — composition root: wires config → logger → pool,
   dispatches `run`/`migrate-up`/`migrate-down`/`migrate-force`/
-  `discover`/`search-discover`/`serve`, handles graceful shutdown.
+  `discover`/`search-discover`/`ingest`/`serve`, handles graceful shutdown.
 
-`ats`, `ingestion`, `filtering`, `ranking`, `notification`, and
+`filtering`, `ranking`, `notification`, and
 `scheduler` do not exist yet — they're created when the phase that needs
 them lands, not before.
 

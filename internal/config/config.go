@@ -144,7 +144,18 @@ type HTTPConfig struct {
 type APIConfig struct {
 	Addr              string
 	CORSAllowedOrigin string
+	// JobRepository selects which internal/job.Repository implementation
+	// serve constructs: "postgres" (the real, Phase 3 default) or "mock"
+	// (internal/job.MockRepository's 12 fixture jobs — no database
+	// required, useful for frontend development against guaranteed
+	// non-empty data before any real ingestion has run).
+	JobRepository string
 }
+
+const (
+	JobRepositoryPostgres = "postgres"
+	JobRepositoryMock     = "mock"
+)
 
 // DiscoveryConfig bounds discovery's own concurrency, independent of the
 // database pool or any future ingestion worker pool (CLAUDE.md: "Database
@@ -152,6 +163,22 @@ type APIConfig struct {
 // other).
 type DiscoveryConfig struct {
 	Workers int
+}
+
+// IngestionConfig bounds ingestion's own concurrency (one target board
+// fetched at a time per worker), independent of the database pool,
+// discovery's own worker pool, and the HTTP client's connection pool.
+//
+// MaxResponseBytes/Timeout size the ingestion HTTP client separately
+// from the shared HTTP_* defaults: a real board fetched with
+// content=true is far larger than a discovery probe or a search
+// response (measured live: databricks, 883 jobs, is 9.7 MB decoded;
+// stripe, 695 jobs, 5.4 MB — both over the 5 MiB HTTP_MAX_RESPONSE_SIZE
+// default, which would fail those boards on every run).
+type IngestionConfig struct {
+	Workers          int
+	MaxResponseBytes int64
+	Timeout          time.Duration
 }
 
 // SearchConfig configures the Serper (google.serper.dev) search API
@@ -194,6 +221,7 @@ type Config struct {
 	Shutdown  ShutdownConfig
 	HTTP      HTTPConfig
 	Discovery DiscoveryConfig
+	Ingestion IngestionConfig
 	Search    SearchConfig
 	API       APIConfig
 }
@@ -303,6 +331,33 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("DISCOVERY_WORKERS must be between 1 and 100, got %d", discoveryWorkersRaw))
 	}
 
+	ingestionWorkersRaw, err := getEnvInt("INGESTION_WORKERS", 5)
+	if err != nil {
+		errs = append(errs, err)
+	} else if ingestionWorkersRaw < 1 || ingestionWorkersRaw > 100 {
+		errs = append(errs, fmt.Errorf("INGESTION_WORKERS must be between 1 and 100, got %d", ingestionWorkersRaw))
+	}
+
+	ingestionMaxBytes, err := getEnvInt64("INGESTION_MAX_RESPONSE_SIZE", 32*1024*1024)
+	if err != nil {
+		errs = append(errs, err)
+	} else if ingestionMaxBytes <= 0 {
+		errs = append(errs, fmt.Errorf("INGESTION_MAX_RESPONSE_SIZE must be positive, got %d", ingestionMaxBytes))
+	}
+
+	ingestionTimeout, err := getEnvDuration("INGESTION_HTTP_TIMEOUT", 30*time.Second)
+	if err != nil {
+		errs = append(errs, err)
+	} else if ingestionTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("INGESTION_HTTP_TIMEOUT must be positive, got %s", ingestionTimeout))
+	}
+
+	jobRepository := getEnv("JOB_REPOSITORY", JobRepositoryPostgres)
+	if jobRepository != JobRepositoryPostgres && jobRepository != JobRepositoryMock {
+		errs = append(errs, fmt.Errorf("JOB_REPOSITORY must be one of [%s %s], got %q",
+			JobRepositoryPostgres, JobRepositoryMock, jobRepository))
+	}
+
 	serperAPIKey := getEnv("SERPER_API_KEY", "")
 
 	apiAddr := getEnv("API_ADDR", ":8080")
@@ -347,12 +402,18 @@ func Load() (*Config, error) {
 		Discovery: DiscoveryConfig{
 			Workers: discoveryWorkersRaw,
 		},
+		Ingestion: IngestionConfig{
+			Workers:          ingestionWorkersRaw,
+			MaxResponseBytes: ingestionMaxBytes,
+			Timeout:          ingestionTimeout,
+		},
 		Search: SearchConfig{
 			SerperAPIKey: serperAPIKey,
 		},
 		API: APIConfig{
 			Addr:              apiAddr,
 			CORSAllowedOrigin: corsAllowedOrigin,
+			JobRepository:     jobRepository,
 		},
 	}, nil
 }

@@ -16,18 +16,21 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/api"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/greenhouse"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/database"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/discovery"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/httpclient"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ingestion"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/observability"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|serve>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|ingest|serve>"
 
 const (
 	defaultSeedFile         = "configs/seed_companies.json"
@@ -110,7 +113,7 @@ func run(ctx context.Context, args []string) error {
 
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "serve":
+	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "ingest", "serve":
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q: %s", cmd, usage)
@@ -150,6 +153,8 @@ func run(ctx context.Context, args []string) error {
 		return runDiscover(ctx, cfg, logger, rest)
 	case "search-discover":
 		return runSearchDiscover(ctx, cfg, logger, rest)
+	case "ingest":
+		return runIngest(ctx, cfg, logger, rest)
 	case "serve":
 		return runServe(ctx, cfg, logger, rest)
 	}
@@ -245,6 +250,18 @@ func newHTTPClient(cfg *config.Config) *httpclient.Client {
 	httpCfg := httpclient.DefaultConfig()
 	httpCfg.Timeout = cfg.HTTP.Timeout
 	httpCfg.MaxResponseBytes = cfg.HTTP.MaxResponseBytes
+	httpCfg.UserAgent = cfg.HTTP.UserAgent
+	return httpclient.New(httpCfg)
+}
+
+// newIngestionHTTPClient is newHTTPClient with the response-size cap and
+// timeout replaced by ingestion's own (config.IngestionConfig): a real
+// ATS board fetched with content=true is far larger than a discovery
+// probe, and the shared 5 MiB default would fail big boards forever.
+func newIngestionHTTPClient(cfg *config.Config) *httpclient.Client {
+	httpCfg := httpclient.DefaultConfig()
+	httpCfg.Timeout = cfg.Ingestion.Timeout
+	httpCfg.MaxResponseBytes = cfg.Ingestion.MaxResponseBytes
 	httpCfg.UserAgent = cfg.HTTP.UserAgent
 	return httpclient.New(httpCfg)
 }
@@ -379,13 +396,28 @@ func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Log
 	return reportDiscoveryResults(logger, results)
 }
 
+// newJobRepository constructs the job.Repository serve hands to
+// internal/api, per JOB_REPOSITORY: the real Postgres-backed job.Store
+// (default, Phase 3) or job.MockRepository's fixture data (no database
+// needed, for frontend development). The returned cleanup closes
+// whatever this call opened (the database pool, for postgres; a no-op
+// for mock). internal/api depends only on job.Repository, so this
+// function is the only place that knows which implementation is in use.
+func newJobRepository(ctx context.Context, cfg *config.Config, logger *slog.Logger) (job.Repository, func(), error) {
+	if cfg.API.JobRepository == config.JobRepositoryMock {
+		logger.Info("serving mock job data", "job_repository", cfg.API.JobRepository)
+		return job.NewMockRepository(), func() {}, nil
+	}
+
+	db, err := database.New(ctx, cfg.Database)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connecting to database: %w", err)
+	}
+	logger.Info("serving jobs from postgres", "job_repository", cfg.API.JobRepository)
+	return job.NewStore(db.Pool), db.Close, nil
+}
+
 // runServe starts the public, read-only job API (see docs/api.md).
-// Backed by job.NewMockRepository() for now — there is no ATS
-// ingestion yet, so no real jobs table to serve from — but internal/api
-// depends only on job.Repository, so swapping in a real
-// Postgres-backed implementation once Phase 3 ships is the entire
-// migration: this function is the only place that constructs which
-// implementation gets used.
 func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
 	if len(args) != 0 {
 		err := errors.New("serve: usage: serve")
@@ -393,7 +425,13 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args
 		return err
 	}
 
-	repo := job.NewMockRepository()
+	repo, closeRepo, err := newJobRepository(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("constructing job repository failed", "error", err)
+		return err
+	}
+	defer closeRepo()
+
 	server := api.NewServer(repo, api.Config{
 		Addr:              cfg.API.Addr,
 		CORSAllowedOrigin: cfg.API.CORSAllowedOrigin,
@@ -430,6 +468,68 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args
 		logger.Info("shutdown complete")
 		return nil
 	}
+}
+
+// runIngest fetches jobs from every active target's ATS board and
+// persists them (see internal/ingestion). Like discover, it exits
+// non-zero only if every target failed — a mix of successes and
+// failures is ingestion's normal steady state (a board can be down or
+// gone at any time) and must not fail a cron-style invocation.
+func runIngest(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
+	if len(args) != 0 {
+		err := errors.New("ingest: usage: ingest")
+		logger.Error(err.Error())
+		return err
+	}
+
+	db, err := database.New(ctx, cfg.Database)
+	if err != nil {
+		logger.Error("connecting to database failed", "error", err)
+		return fmt.Errorf("connecting to database: %w", err)
+	}
+	defer db.Close()
+
+	targetStore := company.NewTargetStore(db.Pool)
+	clients := map[string]ingestion.ATSClient{
+		string(ats.ProviderGreenhouse): greenhouse.New(newIngestionHTTPClient(cfg)),
+	}
+	in := ingestion.New(targetStore, targetStore, job.NewStore(db.Pool), clients, cfg.Ingestion.Workers, logger)
+
+	results, err := in.Run(ctx)
+	if err != nil {
+		logger.Error("ingestion failed", "error", err)
+		return err
+	}
+	return reportIngestionResults(logger, results)
+}
+
+func reportIngestionResults(logger *slog.Logger, results []ingestion.Result) error {
+	var succeeded, failed, inserted, changed, unchanged, skipped, removed int
+	for _, r := range results {
+		if r.Err != nil {
+			failed++
+			logger.Warn("target not ingested",
+				"target_id", r.Target.ID, "provider", r.Target.ATSProvider, "board", r.Target.ExternalBoardID, "error", r.Err)
+			continue
+		}
+		succeeded++
+		inserted += r.Inserted
+		changed += r.Changed
+		unchanged += r.Unchanged
+		skipped += r.Skipped
+		removed += r.Removed
+		logger.Info("target ingested",
+			"target_id", r.Target.ID, "provider", r.Target.ATSProvider, "board", r.Target.ExternalBoardID,
+			"inserted", r.Inserted, "changed", r.Changed, "unchanged", r.Unchanged, "skipped", r.Skipped, "removed", r.Removed)
+	}
+	logger.Info("ingestion run complete",
+		"targets", len(results), "succeeded", succeeded, "failed", failed,
+		"jobs_inserted", inserted, "jobs_changed", changed, "jobs_unchanged", unchanged, "jobs_skipped", skipped, "jobs_removed", removed)
+
+	if len(results) > 0 && succeeded == 0 {
+		return fmt.Errorf("all %d target(s) failed", len(results))
+	}
+	return nil
 }
 
 // runApp starts the long-running process: connect to the database, then

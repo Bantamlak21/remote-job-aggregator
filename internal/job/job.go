@@ -15,12 +15,24 @@ import (
 )
 
 // RemoteType is how much of the role is done outside an office.
+//
+// Values match the jobs table's remote_type CHECK constraint exactly
+// (migrations/000001_init_schema.up.sql) — this is not a free choice:
+// Postgres rejects any other string outright. RemoteTypeUnknown exists
+// because Phase 3 ingestion (Greenhouse's public Job Board API) has no
+// field indicating remote/hybrid/onsite at all; classifying that from
+// free-text location data is Phase 4's job (geographic eligibility &
+// relevance filtering), not ingestion's — every job Phase 3 ingests is
+// unknown until Phase 4 classifies it. Found and fixed before Phase 3
+// began: this type originally used "fully_remote", which the database
+// would have rejected on every real insert.
 type RemoteType string
 
 const (
-	RemoteTypeFullyRemote RemoteType = "fully_remote"
-	RemoteTypeHybrid      RemoteType = "hybrid"
-	RemoteTypeOnsite      RemoteType = "onsite"
+	RemoteTypeRemote  RemoteType = "remote"
+	RemoteTypeHybrid  RemoteType = "hybrid"
+	RemoteTypeOnsite  RemoteType = "onsite"
+	RemoteTypeUnknown RemoteType = "unknown"
 )
 
 // Valid reports whether r is one of the enumerated values. The empty
@@ -30,14 +42,18 @@ const (
 // than pass RemoteType("").
 func (r RemoteType) Valid() bool {
 	switch r {
-	case RemoteTypeFullyRemote, RemoteTypeHybrid, RemoteTypeOnsite:
+	case RemoteTypeRemote, RemoteTypeHybrid, RemoteTypeOnsite, RemoteTypeUnknown:
 		return true
 	default:
 		return false
 	}
 }
 
-// EmploymentType is the contractual shape of the role.
+// EmploymentType is the contractual shape of the role. Values match the
+// jobs table's employment_type CHECK constraint exactly.
+// EmploymentTypeUnknown exists for the same reason RemoteTypeUnknown
+// does: Greenhouse's public API has no employment-type field, so every
+// Phase 3-ingested job starts unknown.
 type EmploymentType string
 
 const (
@@ -45,12 +61,13 @@ const (
 	EmploymentTypePartTime   EmploymentType = "part_time"
 	EmploymentTypeContract   EmploymentType = "contract"
 	EmploymentTypeInternship EmploymentType = "internship"
+	EmploymentTypeUnknown    EmploymentType = "unknown"
 )
 
 // Valid reports whether e is one of the enumerated values.
 func (e EmploymentType) Valid() bool {
 	switch e {
-	case EmploymentTypeFullTime, EmploymentTypePartTime, EmploymentTypeContract, EmploymentTypeInternship:
+	case EmploymentTypeFullTime, EmploymentTypePartTime, EmploymentTypeContract, EmploymentTypeInternship, EmploymentTypeUnknown:
 		return true
 	default:
 		return false

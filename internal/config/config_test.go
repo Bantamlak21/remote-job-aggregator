@@ -16,7 +16,7 @@ func clearAll(t *testing.T) {
 		"APP_ENV", "DATABASE_URL", "DB_MAX_OPEN_CONNS", "DB_MIN_CONNS",
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
-		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN",
+		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY",
 	} {
 		t.Setenv(key, "")
 	}
@@ -550,5 +550,101 @@ func TestSearchConfig_LogValueOnUnconfiguredDoesNotClaimRedaction(t *testing.T) 
 	got := s.LogValue().String()
 	if strings.Contains(got, "REDACTED") {
 		t.Errorf("LogValue() = %q, want no REDACTED marker when there is no key to redact", got)
+	}
+}
+
+func TestLoad_IngestionWorkersDefaultsAndOverride(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.Ingestion.Workers != 5 {
+		t.Errorf("Ingestion.Workers = %d, want default 5", cfg.Ingestion.Workers)
+	}
+
+	t.Setenv("INGESTION_WORKERS", "12")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.Ingestion.Workers != 12 {
+		t.Errorf("Ingestion.Workers = %d, want 12", cfg.Ingestion.Workers)
+	}
+}
+
+func TestLoad_IngestionHTTPDefaultsAreLargerThanTheSharedClientsAndValidated(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	// Regression (adversarial review): real boards fetched with
+	// content=true exceed the shared 5 MiB default (databricks: 9.7 MB).
+	if cfg.Ingestion.MaxResponseBytes <= cfg.HTTP.MaxResponseBytes {
+		t.Errorf("Ingestion.MaxResponseBytes = %d, want larger than the shared HTTP default %d",
+			cfg.Ingestion.MaxResponseBytes, cfg.HTTP.MaxResponseBytes)
+	}
+	if cfg.Ingestion.Timeout <= 0 {
+		t.Errorf("Ingestion.Timeout = %s, want positive", cfg.Ingestion.Timeout)
+	}
+
+	t.Setenv("INGESTION_MAX_RESPONSE_SIZE", "0")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "INGESTION_MAX_RESPONSE_SIZE must be positive") {
+		t.Errorf("err = %v, want a rejection of a non-positive size", err)
+	}
+	t.Setenv("INGESTION_MAX_RESPONSE_SIZE", "1048576")
+	t.Setenv("INGESTION_HTTP_TIMEOUT", "0s")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "INGESTION_HTTP_TIMEOUT must be positive") {
+		t.Errorf("err = %v, want a rejection of a non-positive timeout", err)
+	}
+}
+
+func TestLoad_IngestionWorkersOutOfRangeRejected(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	for _, v := range []string{"0", "101", "-1"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("INGESTION_WORKERS", v)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error for INGESTION_WORKERS=%s, got nil", v)
+			}
+			if !strings.Contains(err.Error(), "INGESTION_WORKERS must be between") {
+				t.Errorf("error = %q, want it to mention the valid range", err.Error())
+			}
+		})
+	}
+}
+
+func TestLoad_JobRepositoryDefaultsToPostgresAndValidates(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.API.JobRepository != JobRepositoryPostgres {
+		t.Errorf("API.JobRepository = %q, want %q by default", cfg.API.JobRepository, JobRepositoryPostgres)
+	}
+
+	t.Setenv("JOB_REPOSITORY", "mock")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.API.JobRepository != JobRepositoryMock {
+		t.Errorf("API.JobRepository = %q, want %q", cfg.API.JobRepository, JobRepositoryMock)
+	}
+
+	t.Setenv("JOB_REPOSITORY", "sqlite")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "JOB_REPOSITORY must be one of") {
+		t.Errorf("Load() with JOB_REPOSITORY=sqlite: err = %v, want a rejection naming the valid values", err)
 	}
 }

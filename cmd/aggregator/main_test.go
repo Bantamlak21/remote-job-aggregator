@@ -5,14 +5,20 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/httpclient"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ingestion"
 )
 
 func TestRun_UsageErrorOnNoArgs(t *testing.T) {
@@ -195,6 +201,84 @@ func TestRunSearchDiscover_MissingNamesFileFailsBeforeTouchingTheDatabase(t *tes
 	}
 }
 
+func TestRunIngest_RejectsArgs(t *testing.T) {
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	err := run(context.Background(), []string{"ingest", "unexpected-arg"})
+	if err == nil {
+		t.Fatal(`ingest with an unexpected arg = nil, want an error`)
+	}
+}
+
+func TestRunIngest_FailsCleanlyWhenDatabaseUnreachable(t *testing.T) {
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:1/does-not-exist")
+
+	err := run(context.Background(), []string{"ingest"})
+	if err == nil {
+		t.Fatal("ingest against an unreachable database = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "connecting to database") {
+		t.Errorf("error = %q, want it to mention the database connection", err.Error())
+	}
+}
+
+func TestReportIngestionResults_ExitsNonZeroOnlyWhenEveryTargetFailed(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if err := reportIngestionResults(logger, nil); err != nil {
+		t.Errorf("no targets: err = %v, want nil (nothing to ingest is not a failure)", err)
+	}
+
+	mixed := []ingestion.Result{{Err: errors.New("boom")}, {Inserted: 3}}
+	if err := reportIngestionResults(logger, mixed); err != nil {
+		t.Errorf("mixed success/failure: err = %v, want nil", err)
+	}
+
+	allFailed := []ingestion.Result{{Err: errors.New("a")}, {Err: errors.New("b")}}
+	if err := reportIngestionResults(logger, allFailed); err == nil {
+		t.Error("all failed: err = nil, want an error")
+	}
+}
+
+// Regression (round-1 review B1): ingestion's HTTP client must use
+// config.IngestionConfig's size cap, not the shared 5 MiB one — real
+// boards (databricks: 9.7 MB) exceed it. Serves a ~6 MiB body and reads
+// it fully through each client.
+func TestNewIngestionHTTPClient_UsesIngestionSizeCapNotTheSharedOne(t *testing.T) {
+	body := strings.Repeat("x", 6<<20)
+	srv := http.NewServeMux()
+	srv.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, body) })
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	clearRequiredEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load() failed: %v", err)
+	}
+
+	read := func(c *httpclient.Client) error {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL, nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		return err
+	}
+
+	if err := read(newHTTPClient(cfg)); err == nil {
+		t.Error("shared client read a 6 MiB body without error, want the 5 MiB cap to reject it")
+	}
+	if err := read(newIngestionHTTPClient(cfg)); err != nil {
+		t.Errorf("ingestion client failed to read a 6 MiB body: %v (want the larger ingestion cap applied)", err)
+	}
+}
+
 func TestRunServe_RejectsArgs(t *testing.T) {
 	clearRequiredEnv(t)
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
@@ -216,6 +300,7 @@ func TestRunServe_StartsRespondsAndShutsDownCleanly(t *testing.T) {
 	clearRequiredEnv(t)
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
 	t.Setenv("API_ADDR", freeTCPAddr(t))
+	t.Setenv("JOB_REPOSITORY", "mock") // no database in this test; postgres mode is covered by internal/job's own DB tests
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

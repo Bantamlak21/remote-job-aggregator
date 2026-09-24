@@ -20,16 +20,15 @@ originally Google Custom Search) and its follow-up provider swap to Serper (PR #
 API having become unviable and Brave's free tier requiring a credit card) are both merged.
 See Section 2's "Search-based discovery" subsection for that history.
 
-**New, this session: a public read-only job API (`aggregator serve`) plus a separate React
-frontend repository (`remote-job-aggregator-web`), a job-board preview UI.** Real ATS
-ingestion (Phase 3) still hasn't shipped — `jobs` remains an empty table — so the API serves
-12 illustrative fixture jobs from a new `internal/job.MockRepository`, behind the same
-`job.Repository` interface a real Postgres-backed implementation will later satisfy with no
-API or frontend change required. Both the backend and the frontend passed independent
-adversarial critic review (ACCEPT on both, one minor fix applied to each — see Section 2's
-"Public job API and job-board frontend" subsection). The backend change is open as **PR #6**
-(https://github.com/Bantamlak12/remote-job-aggregator/pull/6), not yet merged; the frontend
-repo is committed locally with no remote configured yet — see Section 3.
+**Phase 3 (ATS ingestion) is implemented**: `aggregator ingest` fetches every active
+target's jobs from Greenhouse's public Job Board API and stores them (`internal/ats`,
+`internal/ats/greenhouse`, `internal/job.Store`, `internal/ingestion`) — 575 real jobs from
+four real boards are in the dev database, served by `aggregator serve` (real Postgres data by
+default) to the separate React frontend (`remote-job-aggregator-web`). The public job API
+(PR #6) and the search-discovery work (PRs #4/#5/#7/#8) are merged. Filtering, ranking,
+scheduling, and notification are not built: every ingested job is `remote_type` /
+`employment_type = unknown` with no tags until Phase 4 classifies them. See Section 2's
+"Phase 3" subsection for what was built, verified live, and reviewed.
 
 ## 2. Completed Work
 
@@ -580,22 +579,150 @@ tags" endpoint, so the tag-filter dropdown's options are sampled from one `page_
 request's distinct tags. Correct today (12 jobs, one page), will under-count rare tags once
 real volume ships post-Phase-3. Flagged in that repo's own code comment and README.
 
+---
+
+### Phase 3: ATS integration & ingestion (Greenhouse)
+
+**Status: implemented, live-verified against real Greenhouse boards and the real dev
+database; independent adversarial critic review recorded at the end of this subsection.**
+No schema migration (the Phase 1 `jobs` schema was already sufficient).
+
+**A schema/contract mismatch found first, fixed before building on it.** The `jobs` table's
+CHECK constraints allow `remote_type IN ('remote','hybrid','onsite','unknown')` and
+`employment_type IN ('full_time','part_time','contract','internship','unknown')`, but the
+mock job API built earlier this session used `fully_remote` and had no `unknown` — every real
+insert would have been rejected by Postgres. `internal/job`'s enums now match the schema
+exactly; `docs/api.md`, the handlers' validation messages, and the separate frontend repo's
+types/badges/filters were updated to match (an `unknown` value renders no badge, since a
+pill on every card of a real board would be noise).
+
+**Verified against the real API, not assumed.** Greenhouse's public Job Board API
+(`GET boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true`, no key) was curl'd for
+real boards (gitlab, figma) before any code was written: 404 for an unknown board
+(`{"status":404,"error":"Job not found"}`), and — a real finding — the `content` field is
+HTML-entity-encoded at the *outer* layer (the JSON string is literally `&lt;div&gt;...`, not
+`<div>...`). A first `HTMLToText` that tokenized directly returned literal tag text as
+"plain text"; caught by a fixture test built from the real response, fixed by unescaping once
+before tokenizing.
+
+**`internal/ats`** — the provider-agnostic `ats.Job` shape (`ExternalID`, `Title`, `URL`,
+`LocationRaw`, plain-text `Description`, `PublishedAt`), the shared `ats.ErrBoardNotFound`
+(shared, not per-provider, so ingestion can react to it without importing any provider), and
+`HTMLToText` (real HTML tokenizing via `golang.org/x/net/html`, the one new dependency — chosen
+over a regex tag-stripper, which breaks on nested tags/attributes containing `>`).
+**`internal/ats/greenhouse`** — `Client.ListJobs` over the shared pooled `httpclient.Client`
+(retries/backoff/size cap inherited), always `content=true`.
+
+**`internal/job`** — `Record` (full persistence shape) and `Store`: `UpsertFromATS` is one
+atomic `INSERT ... ON CONFLICT (source, source_job_id) DO UPDATE` (a CTE captures the
+previous `content_hash`; `last_seen_at` advances on every sighting, `last_changed_at` and the
+content columns only when the hash differs; a re-appearing job reopens), with the same
+`WHERE` guard against cross-target reassignment `TargetStore.Upsert` got in the search-discovery
+work (`ErrJobTargetMismatch`). `MarkMissingAsRemoved` closes a target's open jobs absent from
+the latest fetch in one `UPDATE ... <> ALL($2::text[])`. `List`/`Get` (the public
+`Repository`) serve only `open` jobs. **Two real bugs were caught by this package's own
+Postgres tests**, not by review: an unaliased `COALESCE` referenced as `posted_at` in
+`ORDER BY`, and an ambiguous `description` (both `jobs` and `companies` have one) — plus a
+subtle one worth remembering: pgx encodes a `nil` Go slice as SQL `NULL`, and
+`x <> ALL(NULL)` is `NULL` for every row, so `MarkMissingAsRemoved(ctx, id, nil)` silently
+removed nothing instead of everything; fixed in the store by normalizing nil to an empty slice.
+
+**`internal/ingestion`** — bounded worker pool mirroring `internal/discovery.Run`, one
+target per worker. A board-not-found deactivates the target (permanent signal); any other
+error leaves it active (may be transient); and a failed fetch **never** reaches
+`MarkMissingAsRemoved` (an empty result from a failure would wrongly close every real job) —
+each pinned by a test. Unregistered providers are per-target errors, never silent skips.
+`TargetStore` gained `ListActive`, `MarkIngestionSucceeded` (finally writing the
+`last_successful_ingestion_at` column Phase 1 created), and `SetActive`.
+
+**CLI/config** — `aggregator ingest`; `INGESTION_WORKERS` (default 5, 1-100);
+`JOB_REPOSITORY=postgres|mock` (default `postgres`; `mock` keeps the 12 fixture jobs for
+frontend development with no database). `serve` now connects to Postgres by default.
+
+**Live verification (real network, real Postgres):** `ingest` against the dev database's six
+discovered targets ingested **575 real jobs** (Discord 49, Figma 159, Airbnb 160, GitLab 207);
+a second run reported 575 *unchanged*, 0 inserted (idempotent, content-hash change detection
+working on real data); planting a phantom open job under a target and re-ingesting reported
+`removed: 1` (removal detection working live; phantom then deleted). Spotify (Lever) and
+Notion (Ashby) are reported `no ATS client registered` every run — expected until Phase 7.
+The real frontend was screenshotted (headless Chrome) rendering the real jobs.
+
+**Review round 1 (independent cold critic): REJECT, 3 blockers + 4 should-fix — all fixed.**
+The critic measured live boards and probed against real Postgres; nothing below was theoretical.
+- *B1: the shared 5 MiB HTTP response cap permanently failed large boards.* Measured live:
+  databricks (883 jobs) is 9.7 MB decoded and stripe (695) 5.4 MB; gitlab/airbnb/figma fit.
+  Fixed with an ingestion-specific client (`INGESTION_MAX_RESPONSE_SIZE`, default 32 MiB;
+  `INGESTION_HTTP_TIMEOUT`, default 30s) and stream decoding (no `io.ReadAll`). Re-verified
+  live: databricks fails at the old 5 MiB cap ("response body exceeds the configured maximum
+  size") and fetches 883/883 jobs with descriptions in 1.4s at 32 MiB; stripe 695/695.
+- *B2: a 200 with no `jobs` key silently meant "zero jobs", which closes every job on the
+  board.* Now an error (`Jobs` is a pointer; absent != empty).
+- *B3: the board token was interpolated into the URL path unescaped* (`acme?x=1#` swallowed
+  `/jobs`; `../../evil`). Now validated against `^[A-Za-z0-9_-]+$` (`ats.ErrInvalidBoardToken`,
+  no request made) and `url.PathEscape`d.
+- *S1: one bad job (NUL byte, invalid UTF-8, blank title/URL) aborted the whole board on every
+  run.* Fields are sanitized (`ats.CleanText`); jobs missing id/title/url are skipped; a job
+  Postgres refuses (SQLSTATE class 22/23, via `job.IsRejectedRecord`) is skipped and counted in
+  `Result.Skipped`, while infrastructure errors still abort. A skipped job still counts as
+  "seen", so it is never closed out as vanished.
+- *S2: `jobs.canonical_url` is a global unique index; setting it from the job URL let one
+  duplicate URL freeze a board.* Ingestion no longer sets it (identity is
+  `(source, source_job_id)`).
+- *S3: a 404 deactivated the target but left its jobs open with dead links forever,
+  contradicting the API docs.* A gone board now also closes its jobs; both are recoverable
+  (rediscovery reactivates the target; a reappearing job reopens on the next ingest).
+- *S4: `HTMLToText` corrupted real text* (`Note : Java TM`, script/style bodies leaking,
+  `<br/>` ignored, nested-list blank lines, and an unconditional pre-unescape that turned
+  legitimate `&lt;b&gt;` text into a swallowed fake tag). Rewritten; the pre-unescape now only
+  applies when the input has no literal `<` but does contain `&lt;` (Greenhouse's outer-encoded
+  shape). The critic's "idempotent" comment claim was also false and is gone.
+- Nits fixed: `ILIKE` metacharacters (`%`, `_`) now match literally; a page past the last one
+  still reports the real total (the frontend's out-of-range self-correction depends on it); a
+  reopened job now counts as changed and bumps `last_changed_at`; titles are trimmed;
+  `PublishedAt` comes only from `first_published` (`updated_at` moves on every edit and the
+  store freezes `published_at`); `docs/api.md` no longer claims `q` matches tags for real jobs.
+  Each has a regression test. After the fixes a live re-ingest reported the expected one-time
+  change (574 changed: cleared canonical URLs and cleaner description text; plus genuine
+  board churn: GitLab +1, Discord -1), and an immediate second run was fully idempotent
+  (575 unchanged).
+
+**Review round 2 (fresh cold critic): ACCEPT, no blockers.** It independently re-verified every
+round-1 claim against real data: 17 hostile board tokens (none reached the network), 20 bad-job
+cases against real Postgres (NUL/invalid-UTF-8 -> 22021, blank title/URL -> 23514, all skippable),
+the databricks board (883 jobs, 9.69 MB) failing at 5 MiB and fetching at 32 MiB, and
+`HTMLToText` over all 1,737 live jobs from stripe/databricks/figma plus the ~576 stored
+descriptions: zero leftover entities, tag fragments, control characters, or marker leakage;
+deep-nesting/5 MB-text-node/2M-`<br>` inputs all finished in under 400 ms. Its findings, all
+fixed with regression tests: (1) the B1 fix had no regression test — added a >5 MiB board test
+(fails at the shared cap, succeeds at the ingestion cap) and a `cmd/aggregator` test pinning
+`newIngestionHTTPClient`; (2) a huge `?page=` overflowed `(page-1)*pageSize` into a negative
+`OFFSET`, a 500 from a public endpoint — now a normal past-the-end page with the real total
+(and a test that a filtered past-the-end total respects the filters); (3) foreign-key
+violations (23503) were classed as skippable per-job rejections, which would report a
+"successful" run that stored nothing if a target vanished mid-run — now they abort; (4) a job
+with a missing id became the colliding identity `"0"` — now empty, so ingestion skips it; (5)
+an inaccurate "memory bounded by one job" comment corrected (the decoded board is held whole,
+~13x the JSON size transiently; worker count x board size bounds memory). Left as documented
+behavior, not bugs: `<pre>` whitespace collapses, input with `&lt;` but no `<` is always treated
+as outer-encoded, and one wrong-typed JSON field fails a whole board's decode (Greenhouse ids
+are reliably ints). The optional single-404 debounce is unbuilt (Section 8).
+
 ## 3. Work In Progress
 
-PR #4 and PR #5 (search-discovery, Google then Serper) are both merged — no outstanding
-administrative step there. **The job API + job-board frontend work is code-complete and
-both-critics-ACCEPT**, but has two outstanding administrative steps, not development work:
+PRs #3–#8 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
+feature note) are all merged. **Phase 3 is code-complete and reviewed** but has outstanding
+administrative steps, not development work:
 
-1. The backend change (`internal/job`, `internal/api`, `serve`, `docs/api.md`, and this
-   document's own updates) is pushed and open as **PR #6**
-   (https://github.com/Bantamlak12/remote-job-aggregator/pull/6, branch
-   `Bantamlak21/frontend-dashboard-e451cddd`), not yet merged.
-2. `remote-job-aggregator-web` is committed locally (branch `init`) with no remote —
-   whether/where it gets one is Bantamlak's call, not assumed by this session.
+1. The Phase 3 backend change (branch `Bantamlak21/phase3-ats-ingestion-e451cddd`) is
+   pushed/opened as a PR at the end of the session that wrote this section — find it with
+   `gh pr list --repo Bantamlak12/remote-job-aggregator`; not yet merged as of this writing.
+2. `remote-job-aggregator-web` (a separate repo, branch `init`, no remote — whether/where it
+   gets one is Bantamlak's call) has the enum-alignment change (types/badges/filters for
+   `remote`/`unknown`) committed locally (`c4ede8f`) but, like the rest of that repo, pushed
+   nowhere.
 
-Whoever picks this up next: check whether step 1 has since become a PR (and whether it
-merged) and whether step 2's remote question has been answered, rather than trusting this
-paragraph once time has passed.
+Whoever picks this up next: check whether both have moved, rather than trusting this paragraph
+once time has passed.
 
 **The original shared checkout** at `/home/bantamlak/my-repos/remote-job-aggregator` (as
 distinct from the worktree this document was written in) had, as of Phase 2's writing, two
@@ -616,27 +743,8 @@ itself).
 
 Ordered by dependency, per the original project requirements. Phase 2 (and the search-based
 discovery extension to it, this session) is complete — see Section 2 — and removed from this
-list. "Phase 3" below is the original roadmap's ATS-integration phase; it is unrelated to
-and not renumbered by the search-discovery work, which was an extension of Phase 2's
-discovery mechanism, not a new phase.
-
-### Phase 3 — ATS integration & ingestion
-- **Objective:** fetch and normalize jobs from Greenhouse (first provider), run ingestion
-  as a bounded worker pool.
-- **Tasks:** `ats` package with a `Provider`-scoped client interface and Greenhouse's
-  first; provider-specific response models kept separate from the normalized `job.Post`
-  type; `ingestion` package (load active targets from `internal/company`, bounded worker
-  pool, decode/normalize, route through filtering/ranking once those exist); `job` package
-  for normalization and lifecycle (new/changed/removed detection, content-hash comparison).
-- **Expected files/modules:** `internal/ats/greenhouse/`, `internal/ingestion/`,
-  `internal/job/`.
-- **Dependencies:** Phase 2 (done — targets to ingest from via `internal/company`, the
-  shared HTTP client via `internal/httpclient`).
-- **Verification:** fake ATS test servers/fixtures (success, 404, 429, 500, invalid JSON,
-  slow/large response, duplicate/changed jobs); `go test -race` for the worker pool. Note
-  from Phase 2's review: verify any "handles X unreliably" claim about a *specific* real ATS
-  behavior against the real internet before asserting it, the same way discovery's HEAD/GET
-  fallback claim was checked and corrected.
+list. Phase 3 (ATS integration & ingestion, Greenhouse first) is also complete — see
+Section 2 — and removed from this list.
 
 ### Phase 4 — Geographic eligibility & relevance filtering
 - **Objective:** deterministic classification of remote-eligibility and role relevance.
@@ -645,21 +753,20 @@ discovery mechanism, not a new phase.
   filtering (configurable positive/negative signals, not hard-coded to one job title). New
   migration adding `job_eligibility` (deferred from Phase 1 deliberately — see Section 5).
 - **Expected files/modules:** `internal/filtering/`, `migrations/00000X_job_eligibility.*.sql`.
-- **Dependencies:** Phase 3 (jobs to classify).
+- **Dependencies:** Phase 3 (done: 575 real ingested jobs to classify, `location_raw` populated).
 - **Verification:** unit tests are the primary tool (deterministic logic), plus an eval
   suite per CLAUDE.md's rule that classification quality needs more than deterministic
   tests alone.
 
 ### Phase 5 — Ranking & upsert/change detection
-- **Objective:** deterministic, explainable scoring; wire filtering+ranking into ingestion
-  with PostgreSQL upsert and lifecycle (new/changed/removed) detection.
-- **Tasks:** `ranking` package (configurable scoring, explainable output); ingestion
-  updated to upsert via `(source, source_job_id)` identity, detect changes via
-  `content_hash`, mark removed jobs via `status`.
-- **Expected files/modules:** `internal/ranking/`; changes to `internal/ingestion/`.
+- **Objective:** deterministic, explainable scoring, wired into the (already built)
+  ingestion pipeline. The upsert-by-`(source, source_job_id)` identity, `content_hash` change
+  detection, and open/removed lifecycle originally listed here shipped in Phase 3.
+- **Tasks:** `ranking` package (configurable scoring, explainable output); ingestion (or a
+  step after it) computing/storing scores for new and changed jobs.
+- **Expected files/modules:** `internal/ranking/`; small changes to `internal/ingestion/`.
 - **Dependencies:** Phase 4 (jobs need eligibility/relevance data to rank against).
-- **Verification:** unit tests for scoring; integration tests for upsert/change-detection
-  against real Postgres.
+- **Verification:** unit tests for scoring, plus an eval suite for ranking quality.
 
 ### Phase 6 — Scheduling & notifications
 - **Objective:** periodic, unattended execution; notify on relevant new jobs.
@@ -673,7 +780,7 @@ discovery mechanism, not a new phase.
 ### Phase 7 — Additional providers & observability
 - **Objective:** Lever and Ashby support; metrics beyond structured logging.
 - **Tasks:** `internal/ats/lever/`, `internal/ats/ashby/`; metrics
-  (`jobs_fetched_total`, `provider_errors_total`, etc.) per CLAUDE.md §23.
+  (`jobs_fetched_total`, `provider_errors_total`, etc.) (no numbered CLAUDE.md section covers this; the earlier reference to "§23" was fabricated).
 - **Dependencies:** Phase 3's `ats` abstraction must already support a second/third
   provider without rework.
 - **Verification:** same fake-server pattern as Greenhouse.
@@ -713,7 +820,7 @@ code (`internal/company`) over the tables Phase 1 already created.
 direct (constrained, see above) `company_id`. `companies`/`target_companies` are now
 actively read and written by `internal/company`'s repositories (exercised live by `discover`
 against real data — 2 companies, 2 targets, as of the last live verification run, cleaned up
-afterward). `jobs` remains untouched by any code — nothing writes to it until Phase 3.
+afterward). `jobs` is now written by `internal/job.Store` via `aggregator ingest` (Phase 3) — 575 real jobs in the dev database as of 2026-09-24.
 
 **Indexes beyond the uniqueness ones above:** `target_companies(company_id)`,
 `target_companies(is_active)` (partial, active only), `jobs(company_id)`,
@@ -751,7 +858,9 @@ cmd/aggregator (composition root)
     ├─ internal/search          (Serper search API client)
     ├─ internal/company         (Store/TargetStore over companies/target_companies)
     ├─ internal/discovery       (seed OR search → candidates → probe → persist)
-    ├─ internal/job             (Job type, Repository interface, MockRepository)
+    ├─ internal/ats             (ats.Job shape, HTMLToText, ats/greenhouse client)
+    ├─ internal/job             (Job/Record types, Repository, Store (Postgres), MockRepository)
+    ├─ internal/ingestion       (bounded worker pool: targets -> ATS fetch -> job.Store)
     ├─ internal/api             (public read-only job API — serve command)
     └─ configs/                 (seed_companies.json, company_names.txt)
 
@@ -773,42 +882,43 @@ JSON file, `CandidatesFromSearch` from a search) converge on the same `Discovere
 pipeline — "how a candidate was found" is fully decoupled from "what happens once we have
 one."
 
-**Planned, not implemented:** `internal/ats`, `internal/ingestion`, `internal/filtering`,
+**Planned, not implemented:** `internal/filtering`,
 `internal/ranking`, `internal/notification`, `internal/scheduler` — see Section 4. These
 packages do not exist on disk. Do not assume any of their functionality when reasoning about
-what the system currently does. `internal/job` exists but only as domain types + a mock
-repository — Phase 3 adds the real Postgres-backed implementation, not a new package.
+what the system currently does.
 
 **Concurrency implemented today:** `pgxpool`'s internal connection management (bounded by
 config); the CLI's signal-handling goroutines (`installSignalHandling`, `watchGracefulStop`,
 `closeWithTimeout`); `internal/discovery`'s bounded worker pool
 (`DISCOVERY_WORKERS`, independent of the database pool and the HTTP client's own connection
-pool). No ingestion pipeline yet — that arrives in Phase 3.
+pool); `internal/ingestion`'s bounded worker pool (`INGESTION_WORKERS`, one ATS board per
+worker, likewise independent).
 
 ## 7. Testing and Verification Status
 
-**Run and passing as of this document (2026-09-23, this worktree, job API/frontend work
-committed to the backend side, PR not yet opened — see Section 3):**
+**Run and passing as of this document (2026-09-24, Phase 3 branch, before commit):**
 
 ```bash
 gofmt -l .                             # clean
 go build ./...                         # clean
 go vet ./...                           # clean
 TEST_DATABASE_URL=postgres://aggregator:aggregator@localhost:5432/aggregator_test \
-  go test -race -p 1 -count=1 ./...    # all 11 packages ok, real Postgres, race detector —
-                                        #   20 internal/database, 31 internal/company,
-                                        #   29 internal/httpclient, 37 internal/discovery,
-                                        #   31 internal/config, 10 internal/search,
-                                        #   8 internal/observability, 15 internal/job,
-                                        #   11 internal/api, 21 cmd/aggregator
+  go test -race -p 1 -count=1 ./...    # all 13 packages ok, real Postgres, race detector —
+                                        #   top-level test functions: 12 internal/ats,
+                                        #   11 internal/ats/greenhouse, 16 internal/ingestion,
+                                        #   33 internal/job, 36 internal/company,
+                                        #   35 internal/config, 24 cmd/aggregator, 11 internal/api
+                                        #   (plus unchanged: database, httpclient, discovery,
+                                        #   search, observability)
 ```
 
-`internal/job` and `internal/api` are new this session; `internal/config` and
-`cmd/aggregator` gained new tests for `APIConfig`/`serve`. All verified passing individually
-and as part of the full-suite run above; zero regressions in any pre-existing test.
+`internal/ats`, `internal/ats/greenhouse`, and `internal/ingestion` are new in Phase 3;
+`internal/job` gained `Store` (tested against real Postgres); `internal/company`,
+`internal/config`, and `cmd/aggregator` gained tests for the new methods/settings/command. All
+verified passing individually and as part of the full-suite run above; zero regressions.
 
 **Frontend (`remote-job-aggregator-web`, separate repo):** Vitest + React Testing Library,
-29 tests across 6 files, all passing; `npm run build` (`tsc -b && vite build`) compiles with
+32 tests across 6 files, all passing; `npm run build` (`tsc -b && vite build`) compiles with
 zero TypeScript errors. Run from that repo's own directory, not this one.
 
 **`-p 1` is required** whenever `TEST_DATABASE_URL` is set and more than one package's tests
@@ -929,42 +1039,58 @@ because none of that code exists yet.
   Whether it gets a GitHub remote, and under which account/org, is explicitly Bantamlak's
   call, not assumed by either builder session. All work (13 commits on `init`) is safe
   locally in the meantime.
-- **The backend job-API change is open as PR #6, not yet merged** — see Section 3.
+- **(Superseded: PR #6 merged.)** The Phase 3 known risks below replace this entry.
+- **A legitimately-empty-looking board wipes its jobs.** A 200 with `"jobs": []` (key present,
+  empty list) is treated as "the board has zero jobs" and closes every open job for that target.
+  That is correct for a genuinely empty board, but a Greenhouse hiccup that returned an empty
+  list would do the same. Not guarded (no evidence it happens; the recovery is automatic,
+  since jobs reopen on the next good run) — a "refuse to remove more than N% of a board in one
+  run" guard is the obvious hardening if it ever bites.
+- **A single 404 permanently deactivates the target and closes its jobs.** Bounded and
+  recoverable (rediscovery reactivates; the next ingest reopens jobs), but there is no
+  "N consecutive 404s" debounce.
+- **`(xmax = 0)` insert detection in `job.Store.UpsertFromATS` relies on documented-by-usage
+  Postgres behavior, not a guaranteed contract.** Under a concurrent first-insert race the
+  loser can over-report `Changed`; affects run counters only, never stored data. The
+  concurrent-convergence test passes today; re-check it on a Postgres major upgrade.
+- **Only Greenhouse is ingested.** Lever and Ashby targets found by `search-discover` are
+  reported `no ATS client registered` every run until Phase 7 (documented in the README).
+- **Real jobs are unclassified.** Every ingested job is `remote_type`/`employment_type =
+  unknown` with no tags and no logo, so the job board's type/tag filters match nothing useful
+  until Phase 4. The API and frontend handle `unknown` honestly (no badge, no guessing).
+- **`internal/ingestion`'s worker pool uses `wg.Add(1)`/`go func` rather than `WaitGroup.Go`**
+  (a gopls modernization hint), deliberately matching `internal/discovery.Run` line for line;
+  modernize both together if ever.
 
 ## 9. Exact Next Step
 
-**Two independent next steps — neither blocks the other:**
+**Start Phase 4: geographic eligibility & relevance filtering** (`internal/filtering`, plus a
+`job_eligibility` migration). Phase 3 deliberately ingests every job as `remote_type =
+unknown` / `employment_type = unknown` with empty `tags`, because Greenhouse's public API
+has none of those fields; classifying them from the raw `location_raw` string, the title, and
+the description is exactly Phase 4's job, and it is where this project's core value
+(correct Ethiopia-eligibility) actually lives. Until it lands, the job board lists real jobs
+but cannot filter by remote type, employment type, or tag (those filters match nothing or
+everything, honestly, rather than guessing).
 
-1. **Administrative only — the code itself is done:** merge PR #6 (or address review
-   feedback if Bantamlak or another reviewer has any), and decide what happens to
-   `remote-job-aggregator-web` — stays local, or gets a remote. Both critic passes already
-   returned ACCEPT and their findings are already fixed; nothing left to build here.
-   `SERPER_API_KEY` has since been provided and `search-discover` live-verified end to end
-   (Section 8) — that external dependency this section used to list is now closed.
-2. **Development, no external dependency: start Phase 3** — build the `internal/ats`
-   package with a Greenhouse client, and extend `internal/job` with a real Postgres-backed
-   `Repository` implementation (the type/interface already exist; Phase 3 adds the second
-   implementation, not a new package) over the existing `jobs` table.
+Prerequisites already in place: 575 real jobs in the dev database from four Greenhouse
+boards, `jobs.location_raw` populated, `jobs.remote_type`/`employment_type` constrained to
+values including `unknown`, and an API/frontend that already render an `unknown`
+classification gracefully (no badge). Design it deterministically (rules and lookup tables,
+per the project's LLM-usage rule) with an eval suite for classification quality, using the
+real ingested `location_raw` values as the fixture corpus — many are things like
+"Remote, Canada; Remote, United States" or "San Francisco, CA • New York, NY" that a naive
+"contains 'remote'" rule would misclassify.
 
-Why this and not `internal/ingestion` first: ingestion's job is to orchestrate "for each
-active target, fetch its jobs, normalize them, persist them" — it needs both something that
-knows how to fetch+parse a specific ATS's response format (`internal/ats`) and a Postgres-
-backed `job.Repository` implementation with the identity/lifecycle rules from CLAUDE.md §9,
-over the existing `jobs` table, following the exact same `Store`/`Upsert`-via-`ON-CONFLICT`
-pattern `internal/company` already established and proved out — `internal/job`'s `Job` type
-and `Repository` interface already exist (this session), so this is adding a second
-implementation next to `MockRepository`, not designing the type from scratch. Building the
-ATS client and the real repository first, each independently testable against
-fixtures/fakes, means ingestion's own tests can focus on orchestration (worker pool, error
-isolation between targets, change detection) rather than re-deriving Greenhouse's response
-shape or job identity rules inline.
-
-Concretely: read CLAUDE.md §10 (ATS Integrations), §9 (Job Identity and Deduplication), and
-§20 (Job Lifecycle) again before starting. Build fake Greenhouse fixtures/test servers per
-§26 before writing the real client against them — don't start with live Greenhouse calls the
-way discovery's seed examples were verified; Phase 3's fetch volume is real job content, not
-a HEAD/GET probe, and needs the fake-server harness to be safe to iterate on without hammering
-a real employer's board.
+Smaller, independent items:
+- **Phase 7 (Lever/Ashby) is now blocking real coverage**: `search-discover` found 6 boards,
+  but `ingest` can only fetch the 4 Greenhouse ones; Spotify (Lever) and Notion (Ashby) are
+  reported as `no ATS client registered` every run. The `ats`/`ingestion` abstraction was
+  built for this (a new provider is a new client in the `clients` map in `runIngest`), so
+  pulling Phase 7's provider work forward is cheap if Bantamlak wants those companies' jobs.
+- The frontend (`remote-job-aggregator-web`) should be revisited after Phase 4 (its filters
+  and tag dropdown are only meaningful once jobs are classified), per the standing request to
+  update it each phase.
 
 ## 10. Development Continuation Instructions
 

@@ -138,8 +138,8 @@ func parseFilter(q url.Values) (job.Filter, error) {
 		rt := job.RemoteType(v)
 		if !rt.Valid() {
 			return job.Filter{}, fmt.Errorf(
-				"remote_type must be one of %s, %s, %s (got %q)",
-				job.RemoteTypeFullyRemote, job.RemoteTypeHybrid, job.RemoteTypeOnsite, v)
+				"remote_type must be one of %s, %s, %s, %s (got %q)",
+				job.RemoteTypeRemote, job.RemoteTypeHybrid, job.RemoteTypeOnsite, job.RemoteTypeUnknown, v)
 		}
 		filter.RemoteType = rt
 	}
@@ -148,8 +148,8 @@ func parseFilter(q url.Values) (job.Filter, error) {
 		et := job.EmploymentType(v)
 		if !et.Valid() {
 			return job.Filter{}, fmt.Errorf(
-				"employment_type must be one of %s, %s, %s, %s (got %q)",
-				job.EmploymentTypeFullTime, job.EmploymentTypePartTime, job.EmploymentTypeContract, job.EmploymentTypeInternship, v)
+				"employment_type must be one of %s, %s, %s, %s, %s (got %q)",
+				job.EmploymentTypeFullTime, job.EmploymentTypePartTime, job.EmploymentTypeContract, job.EmploymentTypeInternship, job.EmploymentTypeUnknown, v)
 		}
 		filter.EmploymentType = et
 	}

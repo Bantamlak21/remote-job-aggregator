@@ -629,3 +629,129 @@ func TestTargetStoreGetByProviderAndBoard_ReturnsErrNotFoundForMissingRow(t *tes
 		t.Fatalf("GetByProviderAndBoard() error = %v, want it to wrap company.ErrNotFound", err)
 	}
 }
+
+func TestTargetStoreListActive_ReturnsOnlyActiveTargetsOrderedByID(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	c := seedCompany(t, ctx, db, "Acme")
+	store := company.NewTargetStore(db.Pool)
+
+	active1, err := store.Upsert(ctx, company.TargetUpsertParams{CompanyID: c.ID, ATSProvider: "greenhouse", ExternalBoardID: "acme-a"})
+	if err != nil {
+		t.Fatalf("Upsert() failed: %v", err)
+	}
+	active2, err := store.Upsert(ctx, company.TargetUpsertParams{CompanyID: c.ID, ATSProvider: "greenhouse", ExternalBoardID: "acme-b"})
+	if err != nil {
+		t.Fatalf("Upsert() failed: %v", err)
+	}
+	inactive, err := store.Upsert(ctx, company.TargetUpsertParams{CompanyID: c.ID, ATSProvider: "greenhouse", ExternalBoardID: "acme-c"})
+	if err != nil {
+		t.Fatalf("Upsert() failed: %v", err)
+	}
+	if err := store.SetActive(ctx, inactive.ID, false); err != nil {
+		t.Fatalf("SetActive(false) failed: %v", err)
+	}
+
+	got, err := store.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive() failed: %v", err)
+	}
+
+	var gotIDs []int64
+	for _, tgt := range got {
+		if tgt.CompanyID == c.ID {
+			gotIDs = append(gotIDs, tgt.ID)
+		}
+	}
+	if len(gotIDs) != 2 || gotIDs[0] != active1.ID || gotIDs[1] != active2.ID {
+		t.Errorf("ListActive() ids for this company = %v, want [%d %d] (active only, ordered by id)", gotIDs, active1.ID, active2.ID)
+	}
+	for _, tgt := range got {
+		if tgt.ID == inactive.ID {
+			t.Errorf("ListActive() included deactivated target %d", inactive.ID)
+		}
+	}
+}
+
+func TestTargetStoreMarkIngestionSucceeded_SetsTimestamp(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	c := seedCompany(t, ctx, db, "Acme")
+	store := company.NewTargetStore(db.Pool)
+
+	target, err := store.Upsert(ctx, company.TargetUpsertParams{CompanyID: c.ID, ATSProvider: "greenhouse", ExternalBoardID: "acme"})
+	if err != nil {
+		t.Fatalf("Upsert() failed: %v", err)
+	}
+	if target.LastSuccessfulIngestionAt != nil {
+		t.Fatalf("LastSuccessfulIngestionAt = %v before any ingestion, want nil", target.LastSuccessfulIngestionAt)
+	}
+
+	if err := store.MarkIngestionSucceeded(ctx, target.ID); err != nil {
+		t.Fatalf("MarkIngestionSucceeded() failed: %v", err)
+	}
+
+	got, err := store.GetByID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetByID() failed: %v", err)
+	}
+	if got.LastSuccessfulIngestionAt == nil {
+		t.Fatal("LastSuccessfulIngestionAt = nil after MarkIngestionSucceeded, want a timestamp")
+	}
+}
+
+func TestTargetStoreMarkIngestionSucceeded_ReturnsErrNotFoundForMissingTarget(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	store := company.NewTargetStore(db.Pool)
+
+	err := store.MarkIngestionSucceeded(ctx, -1)
+	if !errors.Is(err, company.ErrNotFound) {
+		t.Fatalf("MarkIngestionSucceeded() error = %v, want it to wrap company.ErrNotFound", err)
+	}
+}
+
+func TestTargetStoreSetActive_TogglesFlag(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	c := seedCompany(t, ctx, db, "Acme")
+	store := company.NewTargetStore(db.Pool)
+
+	target, err := store.Upsert(ctx, company.TargetUpsertParams{CompanyID: c.ID, ATSProvider: "greenhouse", ExternalBoardID: "acme"})
+	if err != nil {
+		t.Fatalf("Upsert() failed: %v", err)
+	}
+
+	if err := store.SetActive(ctx, target.ID, false); err != nil {
+		t.Fatalf("SetActive(false) failed: %v", err)
+	}
+	got, err := store.GetByID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetByID() failed: %v", err)
+	}
+	if got.IsActive {
+		t.Error("IsActive = true after SetActive(false)")
+	}
+
+	if err := store.SetActive(ctx, target.ID, true); err != nil {
+		t.Fatalf("SetActive(true) failed: %v", err)
+	}
+	got, err = store.GetByID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("GetByID() failed: %v", err)
+	}
+	if !got.IsActive {
+		t.Error("IsActive = false after SetActive(true)")
+	}
+}
+
+func TestTargetStoreSetActive_ReturnsErrNotFoundForMissingTarget(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	store := company.NewTargetStore(db.Pool)
+
+	err := store.SetActive(ctx, -1, false)
+	if !errors.Is(err, company.ErrNotFound) {
+		t.Fatalf("SetActive() error = %v, want it to wrap company.ErrNotFound", err)
+	}
+}

@@ -221,7 +221,7 @@ func TestMockRepository_GetRespectsContextCancellation(t *testing.T) {
 }
 
 func TestRemoteType_Valid(t *testing.T) {
-	valid := []RemoteType{RemoteTypeFullyRemote, RemoteTypeHybrid, RemoteTypeOnsite}
+	valid := []RemoteType{RemoteTypeRemote, RemoteTypeHybrid, RemoteTypeOnsite, RemoteTypeUnknown}
 	for _, v := range valid {
 		if !v.Valid() {
 			t.Errorf("%q.Valid() = false, want true", v)
@@ -236,7 +236,7 @@ func TestRemoteType_Valid(t *testing.T) {
 }
 
 func TestEmploymentType_Valid(t *testing.T) {
-	valid := []EmploymentType{EmploymentTypeFullTime, EmploymentTypePartTime, EmploymentTypeContract, EmploymentTypeInternship}
+	valid := []EmploymentType{EmploymentTypeFullTime, EmploymentTypePartTime, EmploymentTypeContract, EmploymentTypeInternship, EmploymentTypeUnknown}
 	for _, v := range valid {
 		if !v.Valid() {
 			t.Errorf("%q.Valid() = false, want true", v)
