@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // RemoteType is how much of the role is done outside an office.
@@ -83,7 +85,9 @@ type Job struct {
 	// IsPriority is true for jobs from a curated priority company (the
 	// Ethiopian tech companies list): the UI badges them and List can
 	// filter to them. It does not change sort order (recency only).
-	IsPriority     bool
+	IsPriority bool
+	// Market is the list the job belongs to: Ethiopia or Worldwide.
+	Market         market.Market
 	RemoteType     RemoteType
 	EmploymentType EmploymentType
 	RegionNote     string
@@ -117,9 +121,10 @@ type Filter struct {
 	EmploymentType EmploymentType
 	Company        string
 	Tag            string
-	PriorityOnly   bool // true: only jobs from priority companies
-	Page           int  // <= 0 means "use the default" (1)
-	PageSize       int  // <= 0 means "use the default" (20)
+	PriorityOnly   bool          // true: only jobs from priority companies
+	Market         market.Market // "" means both lists
+	Page           int           // <= 0 means "use the default" (1)
+	PageSize       int           // <= 0 means "use the default" (20)
 }
 
 // ListResult is one page of List's matches, plus the total count across

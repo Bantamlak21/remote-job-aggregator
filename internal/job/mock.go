@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // MockRepository serves a fixed set of illustrative fixture jobs — not
@@ -23,7 +25,15 @@ type MockRepository struct {
 
 // NewMockRepository returns a Repository backed by fixtureJobs().
 func NewMockRepository() *MockRepository {
-	return &MockRepository{jobs: fixtureJobs()}
+	jobs := fixtureJobs()
+	for i := range jobs {
+		// The fixtures are illustrative remote roles at well-known companies:
+		// all of them belong to the worldwide list.
+		if jobs[i].Market == "" {
+			jobs[i].Market = market.Worldwide
+		}
+	}
+	return &MockRepository{jobs: jobs}
 }
 
 // List returns the jobs matching filter, newest-first (ties broken by
@@ -52,6 +62,9 @@ func (m *MockRepository) List(ctx context.Context, filter Filter) (ListResult, e
 			continue
 		}
 		if filter.PriorityOnly && !j.IsPriority {
+			continue
+		}
+		if filter.Market != "" && j.Market != filter.Market {
 			continue
 		}
 		matched = append(matched, j)

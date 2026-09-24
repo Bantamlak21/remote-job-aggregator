@@ -10,6 +10,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // Collector gathers jobs from a source that spans many employers: a job
@@ -47,7 +48,7 @@ type EmployerResolver interface {
 // TargetRegistrar finds or creates the company and target a collector's
 // jobs for one employer belong to. *company.Registrar satisfies it.
 type TargetRegistrar interface {
-	EnsureTarget(ctx context.Context, provider, employer string, priority bool) (company.TargetCompany, error)
+	EnsureTarget(ctx context.Context, provider, employer string, priority bool, mk market.Market) (company.TargetCompany, error)
 	// FindTarget returns the existing target without creating one.
 	FindTarget(ctx context.Context, provider, employer string) (company.TargetCompany, bool, error)
 }
@@ -138,6 +139,12 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 	if pr, ok := col.(PriorityRouter); ok {
 		priorityProvider = pr.PriorityProvider()
 	}
+	// The collector's own market ("" when it does not say: targets keep
+	// whatever market they have, new ones are worldwide).
+	var colMarket market.Market
+	if mp, ok := col.(market.Provider); ok {
+		colMarket = mp.Market()
+	}
 
 	type group struct {
 		employer string // canonical
@@ -179,9 +186,10 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 			return append(results, Result{Target: company.TargetCompany{ATSProvider: name, ExternalBoardID: "(collector)"}, Err: err})
 		}
 		g := groups[key]
-		provider := name
+		provider, mk := name, colMarket
 		if g.priority && priorityProvider != "" {
-			provider = priorityProvider
+			// The priority provider's targets are the Ethiopian priority list's.
+			provider, mk = priorityProvider, market.Ethiopia
 		}
 
 		// Drop openings an earlier collector already stored this run.
@@ -208,7 +216,7 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 				continue
 			}
 		} else {
-			target, err = cfg.Registrar.EnsureTarget(ctx, provider, g.employer, g.priority)
+			target, err = cfg.Registrar.EnsureTarget(ctx, provider, g.employer, g.priority, mk)
 		}
 		if err != nil {
 			in.logger.Warn("ingestion: could not register an employer", "collector", name, "employer", g.employer, "error", err)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 func newRegistrar(t *testing.T) (*company.Registrar, *company.Store, *company.TargetStore) {
@@ -20,7 +21,7 @@ func TestRegistrar_CreatesCompanyAndTargetOnFirstSightAndFindsThemAfter(t *testi
 	reg, cs, ts := newRegistrar(t)
 	ctx := context.Background()
 
-	first, err := reg.EnsureTarget(ctx, "ethiojobs", "  New   Employer PLC ", false)
+	first, err := reg.EnsureTarget(ctx, "ethiojobs", "  New   Employer PLC ", false, "")
 	if err != nil {
 		t.Fatalf("EnsureTarget() failed: %v", err)
 	}
@@ -36,7 +37,7 @@ func TestRegistrar_CreatesCompanyAndTargetOnFirstSightAndFindsThemAfter(t *testi
 	}
 
 	// The same employer spelled differently resolves to the same rows.
-	again, err := reg.EnsureTarget(ctx, "ethiojobs", "NEW EMPLOYER PLC", false)
+	again, err := reg.EnsureTarget(ctx, "ethiojobs", "NEW EMPLOYER PLC", false, "")
 	if err != nil {
 		t.Fatalf("second EnsureTarget() failed: %v", err)
 	}
@@ -53,11 +54,11 @@ func TestRegistrar_SameEmployerUnderTwoProvidersSharesTheCompany(t *testing.T) {
 	reg, _, _ := newRegistrar(t)
 	ctx := context.Background()
 
-	a, err := reg.EnsureTarget(ctx, "ethiojobs", "Acme", false)
+	a, err := reg.EnsureTarget(ctx, "ethiojobs", "Acme", false, "")
 	if err != nil {
 		t.Fatalf("EnsureTarget(ethiojobs) failed: %v", err)
 	}
-	b, err := reg.EnsureTarget(ctx, "linkedin", "Acme", false)
+	b, err := reg.EnsureTarget(ctx, "linkedin", "Acme", false, "")
 	if err != nil {
 		t.Fatalf("EnsureTarget(linkedin) failed: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestRegistrar_PriorityFlagsButNeverUnflags(t *testing.T) {
 	reg, cs, _ := newRegistrar(t)
 	ctx := context.Background()
 
-	tgt, err := reg.EnsureTarget(ctx, "ethiojobs", "EthSwitch", true)
+	tgt, err := reg.EnsureTarget(ctx, "ethiojobs", "EthSwitch", true, "")
 	if err != nil {
 		t.Fatalf("EnsureTarget(priority) failed: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestRegistrar_PriorityFlagsButNeverUnflags(t *testing.T) {
 		t.Errorf("company not flagged priority")
 	}
 	// A later source that does not know the company is priority must not clear it.
-	if _, err := reg.EnsureTarget(ctx, "linkedin", "ethswitch", false); err != nil {
+	if _, err := reg.EnsureTarget(ctx, "linkedin", "ethswitch", false, ""); err != nil {
 		t.Fatalf("EnsureTarget(non-priority) failed: %v", err)
 	}
 	if c, _ := cs.GetByID(ctx, tgt.CompanyID); !c.IsPriority {
@@ -94,7 +95,7 @@ func TestRegistrar_ExistingSeededCompanyIsReusedNotDuplicated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seeding failed: %v", err)
 	}
-	tgt, err := reg.EnsureTarget(ctx, "ethiojobs", "Kifiya Financial Technology", true)
+	tgt, err := reg.EnsureTarget(ctx, "ethiojobs", "Kifiya Financial Technology", true, "")
 	if err != nil {
 		t.Fatalf("EnsureTarget() failed: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestRegistrar_RejectsUnusableInput(t *testing.T) {
 		{"absurdly long employer", "ethiojobs", strings.Repeat("x", 201)},
 	}
 	for _, tc := range cases {
-		if _, err := reg.EnsureTarget(ctx, tc.provider, tc.employer, false); err == nil {
+		if _, err := reg.EnsureTarget(ctx, tc.provider, tc.employer, false, ""); err == nil {
 			t.Errorf("%s: succeeded, want an error", tc.name)
 		}
 	}
@@ -146,7 +147,7 @@ func TestRegistrar_FindTargetNeverCreatesAnything(t *testing.T) {
 		t.Errorf("FindTarget created a company")
 	}
 
-	made, err := reg.EnsureTarget(ctx, "ethiojobs", "Real Co", false)
+	made, err := reg.EnsureTarget(ctx, "ethiojobs", "Real Co", false, "")
 	if err != nil {
 		t.Fatalf("EnsureTarget() failed: %v", err)
 	}
@@ -173,8 +174,41 @@ func TestRegistrar_ATargetOwnedByAnotherCompanyIsAnError(t *testing.T) {
 	if _, err := ts.Upsert(ctx, company.TargetUpsertParams{CompanyID: other.ID, ATSProvider: "ethiojobs", ExternalBoardID: "acme"}); err != nil {
 		t.Fatalf("seeding target failed: %v", err)
 	}
-	_, err = reg.EnsureTarget(ctx, "ethiojobs", "Acme", false)
+	_, err = reg.EnsureTarget(ctx, "ethiojobs", "Acme", false, "")
 	if !errors.Is(err, company.ErrTargetCompanyMismatch) {
 		t.Fatalf("error = %v, want ErrTargetCompanyMismatch", err)
+	}
+}
+
+// A target's market is set when given, defaults to worldwide, and an
+// unspecified market never moves an existing target between lists.
+func TestRegistrar_MarketIsSetDefaultedAndNeverResetBySilence(t *testing.T) {
+	reg, _, ts := newRegistrar(t)
+	ctx := context.Background()
+
+	silent, err := reg.EnsureTarget(ctx, "remotive", "Global Co", false, "")
+	if err != nil || silent.Market != market.Worldwide {
+		t.Fatalf("no market given: %+v, %v; want the worldwide default", silent, err)
+	}
+	local, err := reg.EnsureTarget(ctx, "ethiojobs", "Local Co", false, market.Ethiopia)
+	if err != nil || local.Market != market.Ethiopia {
+		t.Fatalf("ethiopia given: %+v, %v", local, err)
+	}
+	// A later sighting that says nothing keeps Ethiopia.
+	again, err := reg.EnsureTarget(ctx, "ethiojobs", "Local Co", false, "")
+	if err != nil || again.Market != market.Ethiopia {
+		t.Errorf("silent re-sighting: market = %q, want it kept as ethiopia (err %v)", again.Market, err)
+	}
+	// An explicit market moves it.
+	moved, err := reg.EnsureTarget(ctx, "ethiojobs", "Local Co", false, market.Worldwide)
+	if err != nil || moved.Market != market.Worldwide {
+		t.Errorf("explicit market: %q, %v; want worldwide", moved.Market, err)
+	}
+	got, _ := ts.GetByID(ctx, local.ID)
+	if got.Market != market.Worldwide {
+		t.Errorf("stored market = %q, want worldwide", got.Market)
+	}
+	if _, err := reg.EnsureTarget(ctx, "ethiojobs", "Bad Co", false, "mars"); err == nil {
+		t.Errorf("an unknown market was accepted")
 	}
 }

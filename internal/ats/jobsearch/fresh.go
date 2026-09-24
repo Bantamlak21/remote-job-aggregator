@@ -14,6 +14,7 @@ import (
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 )
 
@@ -144,6 +145,9 @@ func NewFresh(searcher PageSearcher, cfg FreshConfig, budget *Budget, priorityPr
 
 // StaleAfter says a run's results are a sample; see DefaultStaleAfter.
 func (c *FreshClient) StaleAfter() time.Duration { return DefaultStaleAfter }
+
+// Market says these are jobs in Ethiopia (the search is limited to them).
+func (c *FreshClient) Market() market.Market { return market.Ethiopia }
 
 // PriorityProvider is where a priority company's jobs from this collector
 // are stored.

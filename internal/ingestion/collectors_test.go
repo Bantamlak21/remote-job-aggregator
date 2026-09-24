@@ -12,6 +12,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 type fakeCollector struct {
@@ -45,16 +46,17 @@ type fakeRegistrar struct {
 type registrarCall struct {
 	provider, employer string
 	priority           bool
+	market             market.Market
 }
 
 func newFakeRegistrar() *fakeRegistrar {
 	return &fakeRegistrar{targets: map[string]company.TargetCompany{}, failFor: map[string]error{}}
 }
 
-func (f *fakeRegistrar) EnsureTarget(_ context.Context, provider, employer string, priority bool) (company.TargetCompany, error) {
+func (f *fakeRegistrar) EnsureTarget(_ context.Context, provider, employer string, priority bool, mk market.Market) (company.TargetCompany, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, registrarCall{provider, employer, priority})
+	f.calls = append(f.calls, registrarCall{provider, employer, priority, mk})
 	if err := f.failFor[employer]; err != nil {
 		return company.TargetCompany{}, err
 	}
@@ -164,7 +166,7 @@ func TestRunCollectors_APriorityEmployerKeepsItsCanonicalNameAndIsFlagged(t *tes
 	if _, err := in.RunCollectors(context.Background(), []string{"ethiojobs"}); err != nil {
 		t.Fatalf("RunCollectors() error = %v", err)
 	}
-	if len(reg.calls) != 1 || reg.calls[0] != (registrarCall{"ethiojobs", "EthSwitch", true}) {
+	if len(reg.calls) != 1 || reg.calls[0] != (registrarCall{"ethiojobs", "EthSwitch", true, ""}) {
 		t.Errorf("registration = %+v, want the canonical name EthSwitch flagged priority", reg.calls)
 	}
 }
@@ -183,7 +185,7 @@ func TestRunCollectors_PriorityRouterSendsPriorityEmployersToTheOtherProvider(t 
 	if _, err := in.RunCollectors(context.Background(), []string{"linkedin"}); err != nil {
 		t.Fatalf("RunCollectors() error = %v", err)
 	}
-	want := []registrarCall{{"search", "EthSwitch", true}, {"linkedin", "Some Other Company", false}}
+	want := []registrarCall{{"search", "EthSwitch", true, market.Ethiopia}, {"linkedin", "Some Other Company", false, ""}}
 	if !slices.Equal(reg.calls, want) {
 		t.Errorf("registrations = %+v, want %+v", reg.calls, want)
 	}
@@ -300,7 +302,7 @@ func TestRunCollectors_EmployersAbsentFromTheRunAreAgedOutButOnlyThisCollectorsO
 	reg, jobs := newFakeRegistrar(), &fakeJobUpserter{staleClosed: 2}
 	// Existing active targets: Acme (touched by the run), Gone Co and another
 	// collector's target and a Greenhouse board (must not be aged by this run).
-	acme, _ := reg.EnsureTarget(context.Background(), "ethiojobs", "Acme", false)
+	acme, _ := reg.EnsureTarget(context.Background(), "ethiojobs", "Acme", false, "")
 	reg.calls = nil
 	sweep := &fakeTargetLister{targets: []company.TargetCompany{
 		acme,
@@ -379,7 +381,7 @@ func TestRunCollectors_AnEmployerWithOnlyEndedPostingsIsNeverCreated(t *testing.
 	}}
 	reg, jobs := newFakeRegistrar(), &fakeJobUpserter{endedClosed: 1}
 	// Known Co already has a target from an earlier run.
-	if _, err := reg.EnsureTarget(context.Background(), "ethiojobs", "Known Co", false); err != nil {
+	if _, err := reg.EnsureTarget(context.Background(), "ethiojobs", "Known Co", false, ""); err != nil {
 		t.Fatal(err)
 	}
 	reg.calls = nil
@@ -464,5 +466,35 @@ func TestRunCollectors_AnOpeningThatFailedToStoreDoesNotSuppressTheNextCollector
 	// The fake records every attempt: e1 (refused), then l1.
 	if got := storedIDs(jobs); !slices.Equal(got, []string{"e1", "l1"}) {
 		t.Errorf("upsert attempts = %v, want e1 (refused) then l1", got)
+	}
+}
+
+// marketCollector adds the optional market.Provider behavior.
+type marketCollector struct {
+	*fakeCollector
+	mk market.Market
+}
+
+func (m marketCollector) Market() market.Market { return m.mk }
+
+// A collector that names its market has its employers' targets registered in
+// it; one that does not leaves the market to the registrar (unset).
+func TestRunCollectors_TargetsAreRegisteredInTheCollectorsMarket(t *testing.T) {
+	ethiopian := marketCollector{&fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{mkJob("e1", "Cook", "Local Co")}}, market.Ethiopia}
+	global := marketCollector{&fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{mkJob("g1", "Cook", "Global Co")}}, market.Worldwide}
+	silent := &fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{mkJob("s1", "Cook", "Silent Co")}}
+	reg := newFakeRegistrar()
+	in, _ := newCollectorIngester(&fakeJobUpserter{}, reg, nil, nil, map[string]Collector{"ethiojobs": ethiopian, "remotive": global, "other": silent})
+
+	if _, err := in.RunCollectors(context.Background(), []string{"ethiojobs", "remotive", "other"}); err != nil {
+		t.Fatalf("RunCollectors() error = %v", err)
+	}
+	want := []registrarCall{
+		{"ethiojobs", "Local Co", false, market.Ethiopia},
+		{"remotive", "Global Co", false, market.Worldwide},
+		{"other", "Silent Co", false, ""},
+	}
+	if !slices.Equal(reg.calls, want) {
+		t.Errorf("registrar calls = %+v, want %+v", reg.calls, want)
 	}
 }

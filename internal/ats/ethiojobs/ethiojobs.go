@@ -26,6 +26,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 const (
@@ -77,6 +78,9 @@ func New(pages Fetcher, maxPages int, maxAge, pause time.Duration, logger *slog.
 
 // StaleAfter says the listing is a sample; see DefaultStaleAfter.
 func (c *Collector) StaleAfter() time.Duration { return DefaultStaleAfter }
+
+// Market says these are jobs in Ethiopia.
+func (c *Collector) Market() market.Market { return market.Ethiopia }
 
 // nextData is the part of a listing page's __NEXT_DATA__ this package reads.
 type nextData struct {

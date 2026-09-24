@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // TargetCompany is one row of target_companies: a single ATS board
@@ -32,6 +34,8 @@ type TargetCompany struct {
 	LastSuccessfulIngestionAt *time.Time
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
+	// Market is the list this board's jobs belong to (see internal/market).
+	Market market.Market
 }
 
 // TargetUpsertParams is the input to TargetStore.Upsert.
@@ -47,6 +51,10 @@ type TargetUpsertParams struct {
 	ExternalBoardID   string
 	BoardURL          string
 	DiscoveryMetadata map[string]any
+	// Market is "" to leave the stored market alone (a new row gets the
+	// database default, worldwide), or the market to set. Discovery never
+	// sets it, so re-discovering a board cannot move it between lists.
+	Market market.Market
 }
 
 // TargetStore is the repository for the target_companies table.
@@ -63,7 +71,7 @@ func NewTargetStore(pool *pgxpool.Pool) *TargetStore {
 // targetColumns is the column list every query in this file selects, in
 // the order scanTarget expects.
 const targetColumns = `id, company_id, ats_provider, external_board_id, board_url,
-	discovery_metadata, is_active, last_successful_ingestion_at, created_at, updated_at`
+	discovery_metadata, is_active, last_successful_ingestion_at, created_at, updated_at, market`
 
 // upsertTargetQuery is atomic for the same reason upsertCompanyQuery is:
 // two discovery workers can hit the same provider+board at once, and
@@ -107,12 +115,13 @@ const targetColumns = `id, company_id, ats_provider, external_board_id, board_ur
 // row) and returns ErrTargetCompanyMismatch instead of silently
 // reporting success for a write that didn't happen.
 const upsertTargetQuery = `
-	INSERT INTO target_companies (company_id, ats_provider, external_board_id, board_url, discovery_metadata)
-	VALUES ($1, $2, $3, NULLIF($4, ''), COALESCE($5::jsonb, '{}'::jsonb))
+	INSERT INTO target_companies (company_id, ats_provider, external_board_id, board_url, discovery_metadata, market)
+	VALUES ($1, $2, $3, NULLIF($4, ''), COALESCE($5::jsonb, '{}'::jsonb), COALESCE(NULLIF($6, ''), 'worldwide'))
 	ON CONFLICT (ats_provider, lower(btrim(external_board_id))) DO UPDATE SET
 		is_active          = true,
 		board_url          = COALESCE(EXCLUDED.board_url, target_companies.board_url),
-		discovery_metadata = COALESCE($5::jsonb, target_companies.discovery_metadata)
+		discovery_metadata = COALESCE($5::jsonb, target_companies.discovery_metadata),
+		market             = COALESCE(NULLIF($6, ''), target_companies.market)
 	WHERE target_companies.company_id = EXCLUDED.company_id
 	RETURNING ` + targetColumns
 
@@ -137,6 +146,10 @@ func (s *TargetStore) Upsert(ctx context.Context, params TargetUpsertParams) (*T
 		return nil, errors.New("company: target upsert: external_board_id is required")
 	}
 
+	if params.Market != "" && !params.Market.Valid() {
+		return nil, fmt.Errorf("company: target upsert: market must be %q or %q, got %q", market.Ethiopia, market.Worldwide, params.Market)
+	}
+
 	// nil stays nil so pgx sends SQL NULL for $5, which is what both
 	// COALESCEs in the query test for. Marshaling a nil map instead would
 	// send the four bytes "null", a perfectly valid jsonb value that is
@@ -156,6 +169,7 @@ func (s *TargetStore) Upsert(ctx context.Context, params TargetUpsertParams) (*T
 		boardID,
 		strings.TrimSpace(params.BoardURL),
 		metadata,
+		string(params.Market),
 	))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -301,6 +315,7 @@ func scanTarget(row pgx.Row) (*TargetCompany, error) {
 		&t.LastSuccessfulIngestionAt,
 		&t.CreatedAt,
 		&t.UpdatedAt,
+		&t.Market,
 	)
 	if err != nil {
 		return nil, err

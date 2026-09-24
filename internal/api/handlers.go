@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // jobSummaryDTO is the wire shape of one job in a list response, and
@@ -24,6 +25,7 @@ type jobSummaryDTO struct {
 	CompanyName    string   `json:"company_name"`
 	CompanyLogoURL *string  `json:"company_logo_url"`
 	IsPriority     bool     `json:"is_priority"`
+	Market         string   `json:"market"`
 	RemoteType     string   `json:"remote_type"`
 	EmploymentType string   `json:"employment_type"`
 	RegionNote     string   `json:"region_note"`
@@ -59,6 +61,7 @@ func toSummaryDTO(j job.Job) jobSummaryDTO {
 		CompanyName:    j.CompanyName,
 		CompanyLogoURL: logoURL,
 		IsPriority:     j.IsPriority,
+		Market:         string(j.Market),
 		RemoteType:     string(j.RemoteType),
 		EmploymentType: string(j.EmploymentType),
 		RegionNote:     j.RegionNote,
@@ -167,6 +170,15 @@ func parseFilter(q url.Values) (job.Filter, error) {
 		default:
 			return job.Filter{}, fmt.Errorf("priority must be true or false (got %q)", v)
 		}
+	}
+
+	// "market" selects one of the two lists; omitted means both.
+	if v := q.Get("market"); v != "" {
+		m := market.Market(v)
+		if !m.Valid() {
+			return job.Filter{}, fmt.Errorf("market must be %s or %s (got %q)", market.Ethiopia, market.Worldwide, v)
+		}
+		filter.Market = m
 	}
 
 	if v := q.Get("page"); v != "" {

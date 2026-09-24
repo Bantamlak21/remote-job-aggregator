@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // maxEmployerNameRunes bounds an employer name taken from a job site. A
@@ -54,8 +56,9 @@ func (r *Registrar) FindTarget(ctx context.Context, provider, employer string) (
 //
 // priority true (re-)marks the company as a priority company; false never
 // clears the flag, so a source that does not know an employer is on the
-// priority list cannot un-flag it.
-func (r *Registrar) EnsureTarget(ctx context.Context, provider, employer string, priority bool) (TargetCompany, error) {
+// priority list cannot un-flag it. mk is the market the target's jobs belong
+// to; "" leaves an existing target's market alone (a new one is worldwide).
+func (r *Registrar) EnsureTarget(ctx context.Context, provider, employer string, priority bool, mk market.Market) (TargetCompany, error) {
 	name := strings.Join(strings.Fields(employer), " ")
 	if name == "" {
 		return TargetCompany{}, errors.New("company: registrar: employer name is required")
@@ -78,7 +81,7 @@ func (r *Registrar) EnsureTarget(ctx context.Context, provider, employer string,
 		}
 	}
 	t, err := r.targets.Upsert(ctx, TargetUpsertParams{
-		CompanyID: c.ID, ATSProvider: provider, ExternalBoardID: strings.ToLower(name),
+		CompanyID: c.ID, ATSProvider: provider, ExternalBoardID: strings.ToLower(name), Market: mk,
 	})
 	if err != nil {
 		return TargetCompany{}, err

@@ -10,6 +10,17 @@ sight.
 | Ethiojobs | `ethiojobs` | `ethiojobs.net/jobs?page=N`, the site's own newest-first listing | free | yes |
 | LinkedIn keywords | `linkedin` | Google results (through Serper) for `site:linkedin.com/jobs/view "Ethiopia" <keyword>`, last day only | 1 Serper query per keyword | no, name it |
 
+## Markets: Ethiopian category and worldwide main page
+
+Every target has a `market` (`ethiopia` or `worldwide`, `target_companies.market`, migration
+`000004`); a job's market is its target's. The API reports it as `"market"` and filters on
+`?market=`; the UI shows `worldwide` on the main page and `ethiopia` under the Ethiopia tab.
+The Ethiojobs and LinkedIn keyword collectors, the priority list's targets, and the old
+`feed`/`careers-site`/`search` targets are `ethiopia`; Greenhouse and every future worldwide
+source default to `worldwide`. The market is a property of the source, not the company, so one
+company can appear in both lists. A collector names its market by implementing
+`market.Provider`; a re-sighting that names no market never moves an existing target.
+
 ## Why these two
 
 LinkedIn has no API that lets a third party read jobs, and its robots.txt disallows crawling

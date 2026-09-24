@@ -41,6 +41,13 @@ newest first by `posted_at` (ties by id), whatever the company, and a priority j
 where it lands. `priority=true` narrows a list to just those companies. Additive change:
 existing consumers that ignore the new field and parameter see the same shapes as before.
 
+**Markets.** Every job belongs to one of two lists, reported as `"market"`: `"ethiopia"` (jobs
+in Ethiopia or from Ethiopian employers: the Ethiopian category in the UI) or `"worldwide"`
+(companies hiring across borders: the main page). The market comes from the source the job was
+collected through, so one company can appear in both lists. `market=ethiopia` or
+`market=worldwide` narrows a list to one; omitting it returns both. Additive change: the field
+is new and the parameter is optional.
+
 Base URL (dev): `http://localhost:8080/api/v1`
 
 ## GET /api/v1/jobs
@@ -56,6 +63,7 @@ Query params (all optional):
 | `employment_type` | string | One of `full_time`, `part_time`, `contract`, `internship`, `unknown` |
 | `company` | string | Exact company name match |
 | `tag` | string | Job must have this tag |
+| `market` | string | `ethiopia` or `worldwide` returns only that list; omitted returns both. Anything else is a `400` |
 | `priority` | string | `true` returns only jobs from priority (Ethiopian) companies. `false` is the same as omitting the parameter (it does **not** mean "only non-priority"), so a UI toggle can send its state verbatim. Anything else is a `400` |
 | `page` | int | Default `1` |
 | `page_size` | int | Default `20`, max `100` |
@@ -71,6 +79,7 @@ Response `200`:
       "company_name": "Spotify",
       "company_logo_url": null,
       "is_priority": false,
+      "market": "worldwide",
       "remote_type": "remote",
       "employment_type": "full_time",
       "region_note": "Worldwide",
@@ -85,7 +94,7 @@ Response `200`:
 }
 ```
 
-Invalid `remote_type`/`employment_type`/`priority` values, or `page`/`page_size` out of range, are a
+Invalid `remote_type`/`employment_type`/`priority`/`market` values, or `page`/`page_size` out of range, are a
 `400` (see Error shape), not silently ignored.
 
 ## GET /api/v1/jobs/{id}
@@ -101,6 +110,7 @@ Response `200`:
   "company_name": "Spotify",
   "company_logo_url": null,
   "is_priority": false,
+  "market": "worldwide",
   "remote_type": "remote",
   "employment_type": "full_time",
   "region_note": "Worldwide",

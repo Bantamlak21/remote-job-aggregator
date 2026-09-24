@@ -21,6 +21,7 @@ import (
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // Entry is one company in the list.
@@ -197,6 +198,7 @@ func seedOne(ctx context.Context, e Entry, companies CompanyStore, targets Targe
 	for _, s := range sources {
 		if _, err := targets.Upsert(ctx, company.TargetUpsertParams{
 			CompanyID: c.ID, ATSProvider: string(s.provider), ExternalBoardID: s.board, BoardURL: s.url,
+			Market: market.Ethiopia,
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("registering %s target %q: %w", s.provider, s.board, err))
 			continue

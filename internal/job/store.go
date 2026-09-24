@@ -332,7 +332,7 @@ func (s *Store) CloseBySourceID(ctx context.Context, targetCompanyID int64, sour
 // public Repository interface — a removed/closed job is not something
 // a job-seeker should be shown, even if it is still in the table for
 // ingestion's own history/audit purposes.
-const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, j.remote_type, j.employment_type,
+const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, t.market, j.remote_type, j.employment_type,
 	j.location_raw, COALESCE(j.published_at, j.first_seen_at) AS posted_at, j.application_url`
 
 // List returns open jobs matching filter, newest-first (ties broken by
@@ -358,7 +358,7 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 		pageSize = DefaultPageSize
 	}
 
-	const fromClause = ` FROM jobs j JOIN companies c ON c.id = j.company_id`
+	const fromClause = listFromClause
 	where := ` WHERE j.status = 'open'` + notExpiredClause
 	args := []any{}
 	arg := func(v any) string {
@@ -377,6 +377,9 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 	}
 	if filter.PriorityOnly {
 		where += " AND c.is_priority"
+	}
+	if filter.Market != "" {
+		where += " AND t.market = " + arg(string(filter.Market))
 	}
 	where += s.maxAgeClause(arg)
 	if q := strings.TrimSpace(filter.Query); q != "" {
@@ -443,8 +446,12 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 	return ListResult{Jobs: jobs, Total: total}, nil
 }
 
-const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description
-	FROM jobs j JOIN companies c ON c.id = j.company_id
+// listFromClause joins a job to its company (name, priority flag) and to the
+// target it was collected through (market).
+const listFromClause = ` FROM jobs j JOIN companies c ON c.id = j.company_id
+	JOIN target_companies t ON t.id = j.target_company_id`
+
+const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description` + listFromClause + `
 	WHERE j.status = 'open' AND j.id = $1` + notExpiredClause
 
 // Get returns the open job with the given id, or ErrNotFound — both for
@@ -475,7 +482,7 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		})
 	}
 	err = s.pool.QueryRow(ctx, query, args...).Scan(
-		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &remoteType, &employmentType,
+		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &description,
 	)
 	if err != nil {
@@ -510,7 +517,7 @@ func scanJobSummaryWithTotal(row pgx.Row) (Job, int, error) {
 		total          int
 	)
 	err := row.Scan(
-		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &remoteType, &employmentType,
+		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &total,
 	)
 	if err != nil {

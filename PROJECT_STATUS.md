@@ -786,6 +786,16 @@ limits: [docs/fresh-jobs.md](docs/fresh-jobs.md). Summary:
 - **Known limits:** duplicates are removed within one run only; LinkedIn is a sample of what
   Google shows; slug-derived company names lose acronym casing.
 
+### Ethiopian category vs worldwide main page (branch `Bantamlak21/ethiopia-worldwide-split-e451cddd`)
+
+Requested by Bantamlak: Ethiopian jobs listed separately in an Ethiopian category, worldwide
+remote companies on the main page. Migration `000004` adds `target_companies.market`
+(`ethiopia` | `worldwide`, default `worldwide`); the API adds `market` to every job and a
+`?market=` filter; the frontend has `/` (worldwide) and `/ethiopia` (header tabs), and the
+"Ethiopian tech companies only" toggle exists only on the Ethiopian page. Details:
+[docs/fresh-jobs.md](docs/fresh-jobs.md#markets-ethiopian-category-and-worldwide-main-page).
+On the dev database after migrating: 847 Ethiopian jobs, 108 worldwide (Greenhouse only).
+
 ## 3. Work In Progress
 
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
