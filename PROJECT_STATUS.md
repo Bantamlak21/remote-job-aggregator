@@ -713,9 +713,9 @@ PRs #3–#8 (Phase 2, search discovery, the job API, the company-names fix, the 
 feature note) are all merged. **Phase 3 is code-complete and reviewed** but has outstanding
 administrative steps, not development work:
 
-1. The Phase 3 backend change (branch `Bantamlak21/phase3-ats-ingestion-e451cddd`) is
-   pushed/opened as a PR at the end of the session that wrote this section — find it with
-   `gh pr list --repo Bantamlak12/remote-job-aggregator`; not yet merged as of this writing.
+1. The Phase 3 backend change (branch `Bantamlak21/phase3-ats-ingestion-e451cddd`) is open as
+   **PR #9** (https://github.com/Bantamlak12/remote-job-aggregator/pull/9), not yet merged as
+   of this writing.
 2. `remote-job-aggregator-web` (a separate repo, branch `init`, no remote — whether/where it
    gets one is Bantamlak's call) has the enum-alignment change (types/badges/filters for
    `remote`/`unknown`) committed locally (`c4ede8f`) but, like the rest of that repo, pushed
