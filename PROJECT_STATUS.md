@@ -756,10 +756,10 @@ must be on the board, pinned first, badged, with a filter. **Design and measured
 
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
 feature note, Phase 3) are merged. The **Ethiopian priority companies** work (Section 2) is
-code-complete, reviewed twice, and on branch `Bantamlak21/ethiopian-priority-e451cddd`; its PR
-is opened by the session that wrote it (see the PR list on GitHub), and the frontend changes for
-it (badge, filter, tests) are in `remote-job-aggregator-web` (uncommitted or committed locally on
-`init`, no remote). The Phase 3 notes below are historical:
+code-complete, reviewed twice, and open as **PR #10**
+(https://github.com/Bantamlak12/remote-job-aggregator/pull/10), not yet merged as of this
+writing; its frontend changes (badge, filter, tests) are committed locally in
+`remote-job-aggregator-web` (branch `init`, no remote). The Phase 3 notes below are historical:
 
 1. The Phase 3 backend change (branch `Bantamlak21/phase3-ats-ingestion-e451cddd`) is open as
    **PR #9** (https://github.com/Bantamlak12/remote-job-aggregator/pull/9), not yet merged as
