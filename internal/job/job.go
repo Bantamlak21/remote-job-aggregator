@@ -80,6 +80,10 @@ type Job struct {
 	Title          string
 	CompanyName    string
 	CompanyLogoURL string // empty means the API serves JSON null
+	// IsPriority is true for jobs from a curated priority company (the
+	// Ethiopian tech companies list): List pins them first and the UI
+	// badges them.
+	IsPriority     bool
 	RemoteType     RemoteType
 	EmploymentType EmploymentType
 	RegionNote     string
@@ -113,8 +117,9 @@ type Filter struct {
 	EmploymentType EmploymentType
 	Company        string
 	Tag            string
-	Page           int // <= 0 means "use the default" (1)
-	PageSize       int // <= 0 means "use the default" (20)
+	PriorityOnly   bool // true: only jobs from priority companies
+	Page           int  // <= 0 means "use the default" (1)
+	PageSize       int  // <= 0 means "use the default" (20)
 }
 
 // ListResult is one page of List's matches, plus the total count across

@@ -50,16 +50,23 @@ aggregator discover [seed-file]       # validate candidate ATS boards from a see
 aggregator search-discover [names-file]  # find each company's ATS board via the Serper
                                        # search API (default configs/company_names.txt),
                                        # then the same validate-and-persist as discover
-aggregator ingest                     # fetch jobs from every active target's ATS board
-                                       # (Greenhouse today), upsert them, and close out
-                                       # jobs that disappeared from the board
+aggregator ingest [--providers=a,b]   # fetch jobs from the active targets (Greenhouse
+                                       # boards, RSS feeds, careers pages), upsert them, and
+                                       # close out jobs that disappeared. The search-backed
+                                       # LinkedIn/Ethiojobs source for the priority companies
+                                       # spends Serper's fixed query allowance, so it never
+                                       # runs by default: name it, --providers=search
+aggregator seed-priority [file]       # register the Ethiopian priority companies and their
+                                       # sources (default configs/ethiopian_companies.json)
+aggregator priority-report            # per-company open jobs by source, and how many of the
+                                       # priority companies have at least one open job
 aggregator serve                      # start the public, read-only job API (see docs/api.md)
 ```
 
 `migrate-down` always requires `--yes`: rolling back even one migration is
-a `DROP TABLE`-class operation (this repo currently has exactly one
-migration, so a single step already drops every table — `--all` only
-matters once there's more than one).
+destructive. This repo has two migrations: a single step undoes only the
+latest (`000002` drops the `companies.is_priority` column), and `--all`
+undoes every one, dropping all tables.
 
 All commands respond to a first Ctrl-C/SIGTERM by cancelling their
 context; a second one forces an immediate exit regardless of what the
@@ -109,7 +116,8 @@ raw credential even when the value itself was the problem.
 | `HTTP_MAX_RESPONSE_SIZE` | no | `5242880` (5 MiB) | bytes; independent of `HTTP_TIMEOUT` — this bounds size, not time; must be positive |
 | `HTTP_USER_AGENT` | no | `remote-job-aggregator/1.0 (+https://github.com/Bantamlak12/remote-job-aggregator)` | sent on every outbound request; must not be blank |
 | `DISCOVERY_WORKERS` | no | `5` | bounded concurrency for discovery's HTTP probes; 1 – 100 |
-| `SERPER_API_KEY` | no | — | only for `search-discover`; from https://serper.dev/api-keys |
+| `SERPER_API_KEY` | no | — | for `search-discover` and the search-backed source of `ingest`; from https://serper.dev/api-keys |
+| `SEARCH_MAX_QUERIES_PER_RUN` | no | `60` | cap on Serper queries one `ingest` run may spend (2 per priority company, retries included); 1 – 2500. Serper's free tier is a fixed 2,500 queries, not a monthly allowance |
 | `API_ADDR` | no | `:8080` | only for `serve`; must be a valid `host:port` |
 | `CORS_ALLOWED_ORIGIN` | no | `http://localhost:5173` | only for `serve`; a single explicit origin, never `*` |
 | `JOB_REPOSITORY` | no | `postgres` | only for `serve`; `postgres` (real ingested jobs) or `mock` (12 fixture jobs, no database) |
@@ -283,6 +291,22 @@ empty — Greenhouse's public API has neither, and classifying them is a later p
 CORS is a single explicit allowed origin (`CORS_ALLOWED_ORIGIN`, default matching Vite's
 dev server), never a wildcard.
 
+## Priority companies (Ethiopian tech)
+
+Jobs from 25 curated Ethiopian tech companies are pinned above every other job and badged
+"Ethiopian company" (`is_priority` in the API; `?priority=true` narrows a list to them).
+The list lives in `configs/ethiopian_companies.json`; how their jobs are found, what each
+source checks before it trusts a result, and the measured coverage are in
+[docs/priority-companies.md](docs/priority-companies.md).
+
+```bash
+aggregator migrate-up        # adds companies.is_priority
+aggregator seed-priority     # registers the 25 companies and their sources (idempotent)
+aggregator ingest                    # free sources, e.g. daily
+aggregator ingest --providers=search # LinkedIn + Ethiojobs, 50 Serper queries, e.g. weekly
+aggregator priority-report   # what is actually covered
+```
+
 ## Docker
 
 ```bash
@@ -340,6 +364,15 @@ Modular monolith, one deployable binary. Package boundaries so far:
   normalizes into, `ats.ErrBoardNotFound`, and `HTMLToText` (real HTML
   parsing via `golang.org/x/net/html`, not regex). `internal/ats/greenhouse`
   is the first provider (Greenhouse's public Job Board API, no key needed).
+  Three more job sources share the same `ats.Job` shape: `internal/ats/feed`
+  (RSS), `internal/ats/careers` (a company's own careers page) and
+  `internal/ats/jobsearch` (web search over LinkedIn and Ethiojobs, with
+  strict company verification). `internal/ats/page` is their shared
+  robots-gated page fetcher and parser, and `internal/robots` the RFC 9309
+  robots.txt checker every page fetch goes through.
+- `internal/priority` — the curated priority-company list: loading and
+  validating `configs/ethiopian_companies.json`, seeding companies/targets,
+  and the read-only coverage report.
 - `internal/job` — the normalized `Job` type, the `Repository` interface
   `internal/api` depends on, `Store` (real Postgres: upsert by
   `(source, source_job_id)` with content-hash change detection, and
@@ -353,11 +386,12 @@ Modular monolith, one deployable binary. Package boundaries so far:
   a concrete repository type. Full contract in [docs/api.md](docs/api.md).
 - `migrations/` — versioned SQL, embedded via `go:embed`.
 - `configs/` — operator-editable data files: `seed_companies.json` (full
-  board records) and `company_names.txt` (just names, for
-  `search-discover`).
+  board records), `company_names.txt` (just names, for
+  `search-discover`) and `ethiopian_companies.json` (the priority list).
 - `cmd/aggregator` — composition root: wires config → logger → pool,
   dispatches `run`/`migrate-up`/`migrate-down`/`migrate-force`/
-  `discover`/`search-discover`/`ingest`/`serve`, handles graceful shutdown.
+  `discover`/`search-discover`/`seed-priority`/`priority-report`/`ingest`/
+  `serve`, handles graceful shutdown.
 
 `filtering`, `ranking`, `notification`, and
 `scheduler` do not exist yet — they're created when the phase that needs

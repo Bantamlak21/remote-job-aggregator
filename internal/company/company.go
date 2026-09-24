@@ -42,8 +42,13 @@ type Company struct {
 	Website     string
 	Description string
 	Status      Status
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// IsPriority marks an employer whose jobs the board pins first and
+	// badges (the curated Ethiopian companies list). Set only through
+	// SetPriority, never through Upsert: discovery re-finding a company
+	// by name must not be able to flip it.
+	IsPriority bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // UpsertParams is the input to Store.Upsert. Website and Description are
@@ -79,7 +84,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 
 // companyColumns is the column list every query in this file selects, in
 // the order scanCompany expects.
-const companyColumns = `id, name, website, description, status, created_at, updated_at`
+const companyColumns = `id, name, website, description, status, is_priority, created_at, updated_at`
 
 // upsertCompanyQuery is a single atomic statement on purpose: a
 // SELECT-then-INSERT would let two concurrent discovery workers both
@@ -162,6 +167,23 @@ func (s *Store) GetByID(ctx context.Context, id int64) (*Company, error) {
 const getCompanyByNameQuery = `SELECT ` + companyColumns + `
 	FROM companies WHERE lower(btrim(name)) = lower(btrim($1))`
 
+const setPriorityQuery = `UPDATE companies SET is_priority = $2 WHERE id = $1`
+
+// SetPriority flips a company's priority flag. Idempotent: setting the
+// value a row already has succeeds (RowsAffected counts matched rows,
+// not changed ones). Returns an error wrapping ErrNotFound for an
+// unknown id.
+func (s *Store) SetPriority(ctx context.Context, id int64, priority bool) error {
+	tag, err := s.pool.Exec(ctx, setPriorityQuery, id, priority)
+	if err != nil {
+		return fmt.Errorf("company: setting priority=%t on company %d: %w", priority, id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("company: setting priority=%t on company %d: %w", priority, id, ErrNotFound)
+	}
+	return nil
+}
+
 // GetByName returns the company whose name matches the given one
 // ignoring case and surrounding whitespace — the same identity rule
 // Upsert's ON CONFLICT uses — or an error wrapping ErrNotFound.
@@ -188,7 +210,7 @@ func scanCompany(row pgx.Row) (*Company, error) {
 		description *string
 		status      string
 	)
-	if err := row.Scan(&c.ID, &c.Name, &website, &description, &status, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.Name, &website, &description, &status, &c.IsPriority, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if website != nil {

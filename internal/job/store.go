@@ -245,12 +245,56 @@ func (s *Store) MarkMissingAsRemoved(ctx context.Context, targetCompanyID int64,
 	return int(tag.RowsAffected()), nil
 }
 
+// closeStaleQuery closes a target's open jobs that no fetch has seen for
+// longer than $2 seconds. The cutoff is computed by Postgres from its own
+// clock (last_seen_at is also written by now()), so app/db clock skew can
+// never close a job that was just seen.
+const closeStaleQuery = `
+	UPDATE jobs SET status = 'removed', closed_at = now()
+	WHERE target_company_id = $1 AND status = 'open'
+	  AND last_seen_at < now() - make_interval(secs => $2)`
+
+// CloseStale closes out targetCompanyID's open jobs whose last_seen_at is
+// older than olderThan. It is MarkMissingAsRemoved's counterpart for
+// sources whose listing is not exhaustive (a search result page shows a
+// sample of a company's jobs, not all of them): absence from one fetch
+// proves nothing there, so a job is only closed once it has gone unseen
+// for a whole window of consecutive runs.
+func (s *Store) CloseStale(ctx context.Context, targetCompanyID int64, olderThan time.Duration) (int, error) {
+	if olderThan <= 0 {
+		return 0, fmt.Errorf("job: closing stale jobs for target %d: olderThan must be positive, got %s", targetCompanyID, olderThan)
+	}
+	tag, err := s.pool.Exec(ctx, closeStaleQuery, targetCompanyID, olderThan.Seconds())
+	if err != nil {
+		return 0, fmt.Errorf("job: closing stale jobs for target %d: %w", targetCompanyID, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+const closeBySourceIDQuery = `
+	UPDATE jobs SET status = 'removed', closed_at = now()
+	WHERE target_company_id = $1 AND status = 'open' AND source_job_id = ANY($2::text[])`
+
+// CloseBySourceID closes targetCompanyID's open jobs with the given source
+// ids, for sources that positively report a job as ended (an Ethiojobs
+// posting past its expiry). Ids with no open row are ignored.
+func (s *Store) CloseBySourceID(ctx context.Context, targetCompanyID int64, sourceJobIDs []string) (int, error) {
+	if len(sourceJobIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := s.pool.Exec(ctx, closeBySourceIDQuery, targetCompanyID, sourceJobIDs)
+	if err != nil {
+		return 0, fmt.Errorf("job: closing ended jobs for target %d: %w", targetCompanyID, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // jobColumnsForAPI is the column list List/Get select, in the order
 // scanJobSummary expects. Only 'open' jobs are ever exposed through the
 // public Repository interface — a removed/closed job is not something
 // a job-seeker should be shown, even if it is still in the table for
 // ingestion's own history/audit purposes.
-const jobColumnsForAPI = `j.id, j.title, c.name, j.remote_type, j.employment_type,
+const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, j.remote_type, j.employment_type,
 	j.location_raw, COALESCE(j.published_at, j.first_seen_at) AS posted_at, j.application_url`
 
 // List returns open jobs matching filter, newest-first (ties broken by
@@ -293,6 +337,9 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 	if filter.Company != "" {
 		where += " AND lower(c.name) = lower(" + arg(filter.Company) + ")"
 	}
+	if filter.PriorityOnly {
+		where += " AND c.is_priority"
+	}
 	if q := strings.TrimSpace(filter.Query); q != "" {
 		// Escaped so "%" and "_" in the user's text match literally,
 		// not as wildcards (docs/api.md promises a substring match).
@@ -314,11 +361,13 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 		return ListResult{Total: total}, nil
 	}
 
-	// posted_at is the COALESCE(...) column alias from jobColumnsForAPI;
-	// referencing it by alias in ORDER BY (rather than repeating the
-	// COALESCE expression) is standard Postgres.
+	// Priority companies' jobs are pinned above everything else, so the
+	// flag is the first sort key; newest-first only orders within each
+	// group. posted_at is the COALESCE(...) column alias from
+	// jobColumnsForAPI; referencing it by alias in ORDER BY (rather than
+	// repeating the COALESCE expression) is standard Postgres.
 	query := `SELECT ` + jobColumnsForAPI + `, count(*) OVER() AS total` + fromClause + where +
-		" ORDER BY posted_at DESC, j.id DESC" +
+		" ORDER BY c.is_priority DESC, posted_at DESC, j.id DESC" +
 		" LIMIT " + arg(pageSize) + " OFFSET " + arg((page-1)*pageSize)
 
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -379,7 +428,7 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		description    *string
 	)
 	err = s.pool.QueryRow(ctx, getJobByIDQuery, numericID).Scan(
-		&dbID, &j.Title, &j.CompanyName, &remoteType, &employmentType,
+		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &description,
 	)
 	if err != nil {
@@ -414,7 +463,7 @@ func scanJobSummaryWithTotal(row pgx.Row) (Job, int, error) {
 		total          int
 	)
 	err := row.Scan(
-		&dbID, &j.Title, &j.CompanyName, &remoteType, &employmentType,
+		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &total,
 	)
 	if err != nil {

@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/api"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/greenhouse"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/database"
@@ -30,7 +28,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|ingest|serve>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b]|serve>"
 
 const (
 	defaultSeedFile         = "configs/seed_companies.json"
@@ -113,7 +111,7 @@ func run(ctx context.Context, args []string) error {
 
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "ingest", "serve":
+	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "seed-priority", "priority-report", "ingest", "serve":
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q: %s", cmd, usage)
@@ -153,6 +151,10 @@ func run(ctx context.Context, args []string) error {
 		return runDiscover(ctx, cfg, logger, rest)
 	case "search-discover":
 		return runSearchDiscover(ctx, cfg, logger, rest)
+	case "seed-priority":
+		return runSeedPriority(ctx, cfg, logger, rest)
+	case "priority-report":
+		return runPriorityReport(ctx, cfg, logger, rest)
 	case "ingest":
 		return runIngest(ctx, cfg, logger, rest)
 	case "serve":
@@ -476,8 +478,15 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args
 // failures is ingestion's normal steady state (a board can be down or
 // gone at any time) and must not fail a cron-style invocation.
 func runIngest(ctx context.Context, cfg *config.Config, logger *slog.Logger, args []string) error {
-	if len(args) != 0 {
-		err := errors.New("ingest: usage: ingest")
+	requested, err := parseIngestArgs(args)
+	if err != nil {
+		logger.Error(err.Error())
+		return err
+	}
+
+	sources := newIngestSources(cfg, newIngestionHTTPClient(cfg), defaultPriorityFile, logger)
+	providers, err := chooseProviders(requested, sources)
+	if err != nil {
 		logger.Error(err.Error())
 		return err
 	}
@@ -490,17 +499,21 @@ func runIngest(ctx context.Context, cfg *config.Config, logger *slog.Logger, arg
 	defer db.Close()
 
 	targetStore := company.NewTargetStore(db.Pool)
-	clients := map[string]ingestion.ATSClient{
-		string(ats.ProviderGreenhouse): greenhouse.New(newIngestionHTTPClient(cfg)),
-	}
-	in := ingestion.New(targetStore, targetStore, job.NewStore(db.Pool), clients, cfg.Ingestion.Workers, logger)
+	in := ingestion.New(ingestion.OnlyProviders(targetStore, providers...), targetStore, job.NewStore(db.Pool),
+		sources.clients, cfg.Ingestion.Workers, logger)
+	logger.Info("starting ingestion", "providers", providers)
 
 	results, err := in.Run(ctx)
 	if err != nil {
 		logger.Error("ingestion failed", "error", err)
 		return err
 	}
-	return reportIngestionResults(logger, results)
+	if sources.budget != nil {
+		logger.Info("search queries spent", "used", sources.budget.Used(), "limit", sources.budget.Max())
+	}
+	reportErr := reportIngestionResults(logger, results)
+	logPriorityCoverage(ctx, logger, db)
+	return reportErr
 }
 
 func reportIngestionResults(logger *slog.Logger, results []ingestion.Result) error {

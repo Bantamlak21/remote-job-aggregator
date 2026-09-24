@@ -47,6 +47,30 @@ type Result struct {
 	Title   string
 	URL     string
 	Snippet string
+	// Date is Google's date for the result exactly as Serper returns it
+	// ("19 hours ago", "Sep 14, 2026"), or "" when there is none. Not
+	// parsed here: this package returns raw search data.
+	Date string
+}
+
+// Recency limits results to pages Google saw within a time window (its
+// "tbs=qdr:X" filter). Job pages go stale quickly, so a recency window is
+// the cheapest way to keep a search from returning years-old listings.
+type Recency string
+
+const (
+	RecencyDay   Recency = "d"
+	RecencyWeek  Recency = "w"
+	RecencyMonth Recency = "m"
+	RecencyYear  Recency = "y"
+)
+
+func (r Recency) valid() bool {
+	switch r {
+	case RecencyDay, RecencyWeek, RecencyMonth, RecencyYear:
+		return true
+	}
+	return false
 }
 
 // Client queries the Serper search API over a shared, pooled
@@ -74,6 +98,9 @@ func New(httpClient *httpclient.Client, cfg Config) *Client {
 type requestBody struct {
 	Q   string `json:"q"`
 	Num int    `json:"num"`
+	// TBS is Google's time-based-search filter ("qdr:m" = past month);
+	// omitted for an unrestricted search.
+	TBS string `json:"tbs,omitempty"`
 }
 
 // apiResponse mirrors the subset of Serper's response this package
@@ -94,6 +121,7 @@ type apiResponse struct {
 		Title   string `json:"title"`
 		Link    string `json:"link"`
 		Snippet string `json:"snippet"`
+		Date    string `json:"date"`
 	} `json:"organic"`
 }
 
@@ -121,7 +149,23 @@ var ErrUnauthorized = errors.New("search: unauthorized (invalid API key, or out 
 // Search runs query against Serper's search endpoint and returns up to
 // 10 results.
 func (c *Client) Search(ctx context.Context, query string) ([]Result, error) {
-	body, err := json.Marshal(requestBody{Q: query, Num: 10})
+	return c.search(ctx, query, "")
+}
+
+// SearchRecent is Search limited to pages Google saw within recency.
+func (c *Client) SearchRecent(ctx context.Context, query string, recency Recency) ([]Result, error) {
+	if !recency.valid() {
+		return nil, fmt.Errorf("search: invalid recency %q", recency)
+	}
+	// One call is exactly one wire request: SearchRecent serves the metered
+	// job-search source, which counts calls against a query budget, so the
+	// shared client's own transparent retries (up to 3 more requests per
+	// call) must not multiply what Serper bills. That caller owns retrying.
+	return c.search(httpclient.WithoutRetries(ctx), query, "qdr:"+string(recency))
+}
+
+func (c *Client) search(ctx context.Context, query, tbs string) ([]Result, error) {
+	body, err := json.Marshal(requestBody{Q: query, Num: 10, TBS: tbs})
 	if err != nil {
 		return nil, fmt.Errorf("search: encoding request: %w", err)
 	}
@@ -173,7 +217,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Result, error) {
 
 	results := make([]Result, 0, len(parsed.Organic))
 	for _, item := range parsed.Organic {
-		results = append(results, Result{Title: item.Title, URL: item.Link, Snippet: item.Snippet})
+		results = append(results, Result{Title: item.Title, URL: item.Link, Snippet: item.Snippet, Date: item.Date})
 	}
 	return results, nil
 }

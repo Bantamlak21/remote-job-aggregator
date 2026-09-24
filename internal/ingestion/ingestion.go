@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
@@ -24,6 +25,38 @@ import (
 // convention — *company.TargetStore satisfies this structurally.
 type TargetLister interface {
 	ListActive(ctx context.Context) ([]company.TargetCompany, error)
+}
+
+// OnlyProviders wraps a TargetLister so it lists only targets whose
+// ats_provider is one of providers. It lets one "ingest" invocation cover
+// a subset of sources (say, only the cheap ones daily and the
+// search-backed one weekly) without the Ingester knowing anything about
+// which sources exist.
+func OnlyProviders(inner TargetLister, providers ...string) TargetLister {
+	allow := make(map[string]bool, len(providers))
+	for _, p := range providers {
+		allow[p] = true
+	}
+	return providerFilter{inner: inner, allow: allow}
+}
+
+type providerFilter struct {
+	inner TargetLister
+	allow map[string]bool
+}
+
+func (f providerFilter) ListActive(ctx context.Context) ([]company.TargetCompany, error) {
+	all, err := f.inner.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]company.TargetCompany, 0, len(all))
+	for _, t := range all {
+		if f.allow[t.ATSProvider] {
+			kept = append(kept, t)
+		}
+	}
+	return kept, nil
 }
 
 // TargetRecorder is what Ingester needs from internal/company to record
@@ -42,11 +75,25 @@ type ATSClient interface {
 	ListJobs(ctx context.Context, boardToken string) ([]ats.Job, error)
 }
 
+// PartialClient is an optional interface an ATSClient implements when its
+// listing is a sample of the company's jobs rather than all of them (web
+// search shows some of a company's postings, never a complete board).
+// For such a client, "not in this run's results" proves nothing, so the
+// ingester does not close jobs missing from the run; it closes only those
+// no run has seen for StaleAfter. A full-board client (Greenhouse, an RSS
+// feed, a careers page) does not implement it and keeps the exact
+// "missing from the board means gone" rule.
+type PartialClient interface {
+	StaleAfter() time.Duration
+}
+
 // JobUpserter is the dependency Ingester needs from internal/job to
 // persist what an ATSClient returns.
 type JobUpserter interface {
 	UpsertFromATS(ctx context.Context, r job.Record) (job.UpsertOutcome, error)
 	MarkMissingAsRemoved(ctx context.Context, targetCompanyID int64, seenSourceJobIDs []string) (int, error)
+	CloseStale(ctx context.Context, targetCompanyID int64, olderThan time.Duration) (int, error)
+	CloseBySourceID(ctx context.Context, targetCompanyID int64, sourceJobIDs []string) (int, error)
 }
 
 // Result is the outcome of ingesting one target. Err is nil if and only
@@ -81,7 +128,15 @@ type Ingester struct {
 	clients        map[string]ATSClient
 	workers        int
 	logger         *slog.Logger
+	now            func() time.Time
 }
+
+// maxFuturePublishedAt is how far ahead of now a publish date may be
+// (clock skew and time zones) before it is treated as a source error.
+const maxFuturePublishedAt = 24 * time.Hour
+
+// maxTitleRunes bounds a stored job title.
+const maxTitleRunes = 300
 
 // New returns an Ingester. clients maps an ats_provider value (matching
 // target_companies.ats_provider, e.g. "greenhouse") to the client that
@@ -99,6 +154,7 @@ func New(targets TargetLister, targetRecorder TargetRecorder, jobs JobUpserter, 
 		clients:        clients,
 		workers:        workers,
 		logger:         logger,
+		now:            time.Now,
 	}
 }
 
@@ -180,13 +236,37 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 	}
 
 	seenIDs := make([]string, 0, len(atsJobs))
+	var endedIDs []string
 	var inserted, changed, unchanged, skipped int
+	latestPlausible := in.now().Add(maxFuturePublishedAt)
 	for _, aj := range atsJobs {
+		// A job the source itself reports as ended is not stored; any open
+		// row for it is closed below. It is deliberately not "seen".
+		if aj.Closed {
+			if aj.ExternalID != "" {
+				endedIDs = append(endedIDs, aj.ExternalID)
+			}
+			continue
+		}
+		// A publish date from the future is a source bug; trusted, it would
+		// pin the job above every real one in its group. Falling back to the
+		// first-seen time is the honest answer.
+		if aj.PublishedAt.After(latestPlausible) {
+			in.logger.Warn("ingestion: ignoring a publish date in the future",
+				"target_id", t.ID, "external_id", aj.ExternalID, "published_at", aj.PublishedAt)
+			aj.PublishedAt = time.Time{}
+		}
+
 		// Every job the board listed counts as "seen" even if it cannot
 		// be stored below: a job that is on the board but has bad data
 		// must not be closed out as if it had disappeared.
 		seenIDs = append(seenIDs, aj.ExternalID)
 
+		// An unbounded title (a whole page's <title>, a blob) is a source
+		// bug; it would bloat every list response.
+		if r := []rune(aj.Title); len(r) > maxTitleRunes {
+			aj.Title = string(r[:maxTitleRunes])
+		}
 		if aj.ExternalID == "" || aj.Title == "" || aj.URL == "" {
 			skipped++
 			in.logger.Warn("ingestion: skipping a job missing id, title, or url",
@@ -227,10 +307,25 @@ func (in *Ingester) processTarget(ctx context.Context, t company.TargetCompany) 
 		}
 	}
 
-	removed, err := in.jobs.MarkMissingAsRemoved(ctx, t.ID, seenIDs)
+	var removed int
+	if len(endedIDs) > 0 {
+		closed, err := in.jobs.CloseBySourceID(ctx, t.ID, endedIDs)
+		if err != nil {
+			return Result{Target: t, Inserted: inserted, Changed: changed, Unchanged: unchanged, Skipped: skipped,
+				Err: fmt.Errorf("ingestion: closing ended jobs for %s/%s: %w", t.ATSProvider, t.ExternalBoardID, err)}
+		}
+		removed += closed
+	}
+	var closedByRule int
+	if pc, ok := client.(PartialClient); ok && pc.StaleAfter() > 0 {
+		closedByRule, err = in.jobs.CloseStale(ctx, t.ID, pc.StaleAfter())
+	} else {
+		closedByRule, err = in.jobs.MarkMissingAsRemoved(ctx, t.ID, seenIDs)
+	}
+	removed += closedByRule
 	if err != nil {
 		return Result{Target: t, Inserted: inserted, Changed: changed, Unchanged: unchanged, Skipped: skipped,
-			Err: fmt.Errorf("ingestion: marking missing jobs removed for %s/%s: %w", t.ATSProvider, t.ExternalBoardID, err)}
+			Err: fmt.Errorf("ingestion: closing jobs no longer listed for %s/%s: %w", t.ATSProvider, t.ExternalBoardID, err)}
 	}
 
 	if err := in.targetRecorder.MarkIngestionSucceeded(ctx, t.ID); err != nil {

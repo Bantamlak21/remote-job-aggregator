@@ -38,7 +38,19 @@ var ErrInvalidBoardToken = errors.New("ats: invalid board token")
 // migration.
 type Provider string
 
-const ProviderGreenhouse Provider = "greenhouse"
+// The ats_provider values in use. The last three are not ATS vendors but
+// the other ways a company's jobs reach the board; they share the same
+// target_companies/jobs model, so ingestion treats them uniformly:
+//
+//   - ProviderFeed: an RSS feed (board id = the feed URL)
+//   - ProviderCareersSite: a careers page listing job links (board id = the page URL)
+//   - ProviderSearch: web search over LinkedIn and Ethiojobs (board id = the company name)
+const (
+	ProviderGreenhouse  Provider = "greenhouse"
+	ProviderFeed        Provider = "feed"
+	ProviderCareersSite Provider = "careers-site"
+	ProviderSearch      Provider = "search"
+)
 
 // Job is one job posting as fetched from an ATS, before it becomes a
 // job.Record — provider-agnostic (every field here is something every
@@ -57,6 +69,12 @@ type Job struct {
 	LocationRaw string
 	Description string
 	PublishedAt time.Time // zero means the provider didn't supply one
+	// Closed means the source itself reports this job as ended (an expired
+	// or closed posting). Only ExternalID is meaningful then. Ingestion
+	// does not store such a job; it closes any open row with that
+	// ExternalID, so a job the source has retired disappears at once
+	// instead of lingering until a stale window runs out.
+	Closed bool
 }
 
 // CleanText makes an external string safe to store: drops NUL bytes

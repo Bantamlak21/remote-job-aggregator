@@ -42,6 +42,38 @@ var ErrResponseTooLarge = errors.New("httpclient: response body exceeds the conf
 // ever reaches a caller through Do, which adds one.
 var ErrTooManyRedirects = errors.New("too many redirects")
 
+// ErrRedirectRejected wraps whatever error a RedirectCheck returned. It is
+// a settled answer, never retried.
+var ErrRedirectRejected = errors.New("httpclient: redirect rejected")
+
+type ctxKey int
+
+const (
+	redirectCheckKey ctxKey = iota
+	noRetryKey
+)
+
+// RedirectCheck vets the request a redirect is about to make (its URL is
+// the redirect target). Returning an error aborts the request before the
+// target is contacted.
+type RedirectCheck func(next *http.Request) error
+
+// WithRedirectCheck returns a context that makes every request sent with it
+// call check before following each redirect. It exists so callers that
+// gate fetches on something host- or path-specific (robots.txt) can apply
+// the same gate to where a redirect leads, not only to the URL they asked
+// for.
+func WithRedirectCheck(ctx context.Context, check RedirectCheck) context.Context {
+	return context.WithValue(ctx, redirectCheckKey, check)
+}
+
+// WithoutRetries returns a context that makes Do attempt a request exactly
+// once. For callers that meter their own requests (a paid API with a query
+// budget) and so must know one call is one wire request.
+func WithoutRetries(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noRetryKey, true)
+}
+
 // Backoff shape. Base and cap are deliberately package constants rather
 // than Config fields: they are a property of "how to be a polite HTTP
 // client", not something a caller should have to decide, and every value
@@ -151,7 +183,7 @@ func New(cfg Config) *Client {
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   cfg.Timeout,
-			CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// via holds every request already made, including the
 				// original one — so at the check for the k-th redirect,
 				// len(via) == k. ">" (not ">=") is what makes
@@ -164,6 +196,11 @@ func New(cfg Config) *Client {
 				// every redirect exactly like MaxRedirects=0.
 				if len(via) > cfg.MaxRedirects {
 					return fmt.Errorf("%w (limit %d)", ErrTooManyRedirects, cfg.MaxRedirects)
+				}
+				if check, ok := req.Context().Value(redirectCheckKey).(RedirectCheck); ok {
+					if err := check(req); err != nil {
+						return fmt.Errorf("%w: %w", ErrRedirectRejected, err)
+					}
 				}
 				return nil
 			},
@@ -209,6 +246,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 
 	ctx := req.Context()
 	maxRetries := max(c.cfg.MaxRetries, 0)
+	if noRetry, _ := ctx.Value(noRetryKey).(bool); noRetry {
+		maxRetries = 0
+	}
 
 	for attempt := 0; ; attempt++ {
 		// Checked before every attempt, not just before the first: a
@@ -232,7 +272,8 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 			// wall clock by MaxRetries+1.
 			if errors.Is(err, context.Canceled) ||
 				errors.Is(err, context.DeadlineExceeded) ||
-				errors.Is(err, ErrTooManyRedirects) {
+				errors.Is(err, ErrTooManyRedirects) ||
+				errors.Is(err, ErrRedirectRejected) {
 				return nil, fmt.Errorf("httpclient: %w", err)
 			}
 			if attempt >= maxRetries {

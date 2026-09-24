@@ -23,6 +23,7 @@ type jobSummaryDTO struct {
 	Title          string   `json:"title"`
 	CompanyName    string   `json:"company_name"`
 	CompanyLogoURL *string  `json:"company_logo_url"`
+	IsPriority     bool     `json:"is_priority"`
 	RemoteType     string   `json:"remote_type"`
 	EmploymentType string   `json:"employment_type"`
 	RegionNote     string   `json:"region_note"`
@@ -57,6 +58,7 @@ func toSummaryDTO(j job.Job) jobSummaryDTO {
 		Title:          j.Title,
 		CompanyName:    j.CompanyName,
 		CompanyLogoURL: logoURL,
+		IsPriority:     j.IsPriority,
 		RemoteType:     string(j.RemoteType),
 		EmploymentType: string(j.EmploymentType),
 		RegionNote:     j.RegionNote,
@@ -152,6 +154,19 @@ func parseFilter(q url.Values) (job.Filter, error) {
 				job.EmploymentTypeFullTime, job.EmploymentTypePartTime, job.EmploymentTypeContract, job.EmploymentTypeInternship, job.EmploymentTypeUnknown, v)
 		}
 		filter.EmploymentType = et
+	}
+
+	// "priority=true" narrows to priority companies' jobs; "priority=false"
+	// is the same as omitting the parameter (it does NOT mean "only
+	// non-priority"), so a UI toggle can send its state verbatim.
+	if v := q.Get("priority"); v != "" {
+		switch v {
+		case "true":
+			filter.PriorityOnly = true
+		case "false":
+		default:
+			return job.Filter{}, fmt.Errorf("priority must be true or false (got %q)", v)
+		}
 	}
 
 	if v := q.Get("page"); v != "" {

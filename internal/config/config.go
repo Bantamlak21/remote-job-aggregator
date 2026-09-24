@@ -191,6 +191,11 @@ type IngestionConfig struct {
 // validate as a pair.
 type SearchConfig struct {
 	SerperAPIKey string
+	// MaxQueriesPerRun caps how many Serper queries one "ingest" run may
+	// spend on the search-based job source (two per priority company).
+	// Serper's free tier is a fixed 2,500 queries, not a monthly
+	// allowance, so a misconfigured cron must not be able to burn it.
+	MaxQueriesPerRun int
 }
 
 // LogValue redacts the API key so a SearchConfig can be logged directly
@@ -202,7 +207,7 @@ func (s SearchConfig) LogValue() slog.Value {
 	if key != "" {
 		key = "REDACTED"
 	}
-	return slog.GroupValue(slog.String("serper_api_key", key))
+	return slog.GroupValue(slog.String("serper_api_key", key), slog.Int("max_queries_per_run", s.MaxQueriesPerRun))
 }
 
 // Configured reports whether the search credential is present, i.e.
@@ -360,6 +365,13 @@ func Load() (*Config, error) {
 
 	serperAPIKey := getEnv("SERPER_API_KEY", "")
 
+	searchMaxQueries, err := getEnvInt("SEARCH_MAX_QUERIES_PER_RUN", 60)
+	if err != nil {
+		errs = append(errs, err)
+	} else if searchMaxQueries < 1 || searchMaxQueries > 2500 {
+		errs = append(errs, fmt.Errorf("SEARCH_MAX_QUERIES_PER_RUN must be between 1 and 2500, got %d", searchMaxQueries))
+	}
+
 	apiAddr := getEnv("API_ADDR", ":8080")
 	if strings.TrimSpace(apiAddr) == "" {
 		errs = append(errs, errors.New("API_ADDR must not be blank"))
@@ -408,7 +420,8 @@ func Load() (*Config, error) {
 			Timeout:          ingestionTimeout,
 		},
 		Search: SearchConfig{
-			SerperAPIKey: serperAPIKey,
+			SerperAPIKey:     serperAPIKey,
+			MaxQueriesPerRun: searchMaxQueries,
 		},
 		API: APIConfig{
 			Addr:              apiAddr,

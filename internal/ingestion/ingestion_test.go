@@ -103,11 +103,28 @@ type removedCall struct {
 	seen     []string
 }
 
+type staleCall struct {
+	targetID  int64
+	olderThan time.Duration
+}
+
+type endedCall struct {
+	targetID int64
+	ids      []string
+}
+
 type fakeJobUpserter struct {
+	endedCalls  []endedCall
+	endedClosed int
+	endedErr    error
+
 	mu           sync.Mutex
 	upserts      []job.Record
 	outcomeFn    func(job.Record) (job.UpsertOutcome, error)
 	removedCalls []removedCall
+	staleCalls   []staleCall
+	staleClosed  int
+	staleErr     error
 	upsertErr    error
 }
 
@@ -129,6 +146,20 @@ func (f *fakeJobUpserter) MarkMissingAsRemoved(_ context.Context, targetID int64
 	defer f.mu.Unlock()
 	f.removedCalls = append(f.removedCalls, removedCall{targetID, seen})
 	return 0, nil
+}
+
+func (f *fakeJobUpserter) CloseBySourceID(_ context.Context, targetID int64, ids []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.endedCalls = append(f.endedCalls, endedCall{targetID, append([]string(nil), ids...)})
+	return f.endedClosed, f.endedErr
+}
+
+func (f *fakeJobUpserter) CloseStale(_ context.Context, targetID int64, olderThan time.Duration) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.staleCalls = append(f.staleCalls, staleCall{targetID, olderThan})
+	return f.staleClosed, f.staleErr
 }
 
 func testLogger() *slog.Logger {

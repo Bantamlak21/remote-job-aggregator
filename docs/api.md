@@ -23,6 +23,13 @@ be removed — some jobs may stay genuinely unknown even after classification ru
 raw location string too ambiguous to classify confidently), so `unknown` is a real,
 permanent value, not a temporary one.
 
+**Priority companies.** Jobs from the curated Ethiopian tech companies
+(`configs/ethiopian_companies.json`, see `docs/priority-companies.md`) carry
+`"is_priority": true` and are pinned above every other job in `GET /api/v1/jobs`, on every
+page, regardless of `posted_at`; within each group the order is newest first. `priority=true`
+narrows a list to just those companies. Additive change: existing consumers that ignore the
+new field and parameter see the same shapes as before.
+
 Base URL (dev): `http://localhost:8080/api/v1`
 
 ## GET /api/v1/jobs
@@ -38,6 +45,7 @@ Query params (all optional):
 | `employment_type` | string | One of `full_time`, `part_time`, `contract`, `internship`, `unknown` |
 | `company` | string | Exact company name match |
 | `tag` | string | Job must have this tag |
+| `priority` | string | `true` returns only jobs from priority (Ethiopian) companies. `false` is the same as omitting the parameter (it does **not** mean "only non-priority"), so a UI toggle can send its state verbatim. Anything else is a `400` |
 | `page` | int | Default `1` |
 | `page_size` | int | Default `20`, max `100` |
 
@@ -51,6 +59,7 @@ Response `200`:
       "title": "Backend Engineer, Payments",
       "company_name": "Spotify",
       "company_logo_url": null,
+      "is_priority": false,
       "remote_type": "remote",
       "employment_type": "full_time",
       "region_note": "Worldwide",
@@ -65,7 +74,7 @@ Response `200`:
 }
 ```
 
-Invalid `remote_type`/`employment_type` values, or `page`/`page_size` out of range, are a
+Invalid `remote_type`/`employment_type`/`priority` values, or `page`/`page_size` out of range, are a
 `400` (see Error shape), not silently ignored.
 
 ## GET /api/v1/jobs/{id}
@@ -80,6 +89,7 @@ Response `200`:
   "title": "Backend Engineer, Payments",
   "company_name": "Spotify",
   "company_logo_url": null,
+  "is_priority": false,
   "remote_type": "remote",
   "employment_type": "full_time",
   "region_note": "Worldwide",

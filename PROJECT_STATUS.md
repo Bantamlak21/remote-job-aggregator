@@ -1,6 +1,6 @@
 # Project Status
 
-_Last updated: 2026-09-23._
+_Last updated: 2026-09-24._
 
 ## 1. Project Overview
 
@@ -707,11 +707,59 @@ behavior, not bugs: `<pre>` whitespace collapses, input with `&lt;` but no `<` i
 as outer-encoded, and one wrong-typed JSON field fails a whole board's decode (Greenhouse ids
 are reliably ints). The optional single-404 debounce is unbuilt (Section 8).
 
+### Ethiopian priority companies (between Phase 3 and Phase 4; branch `Bantamlak21/ethiopian-priority-e451cddd`)
+
+**Request:** the jobs of 25 Ethiopian tech companies (Bantamlak's list, `configs/ethiopian_companies.json`)
+must be on the board, pinned first, badged, with a filter. **Design and measured results:**
+[docs/priority-companies.md](docs/priority-companies.md). Summary:
+
+- **Schema/API/UI:** migration `000002` adds `companies.is_priority`; `job.Store.List` orders
+  `is_priority DESC, posted_at DESC, id DESC` (pin holds across pages; real-Postgres tests);
+  `is_priority` on list and detail; `?priority=true` filter (`false` = no filter, anything else
+  400); frontend (`remote-job-aggregator-web`) badge, violet card outline and "Ethiopian
+  companies only" toggle, 43 tests.
+- **Sources** (none of the 25 is on Greenhouse/Lever/Ashby): `internal/ats/feed` (RSS),
+  `internal/ats/careers` (a company's own careers page), `internal/ats/jobsearch` (Serper search
+  over LinkedIn and Ethiojobs). All three fit the existing target/ingestion model as new
+  `ats_provider` values. Supporting: `internal/robots` (RFC 9309, fail-closed, redirects gated),
+  `internal/ats/page` (robots-gated, size-bounded fetch/parse), `httpclient.WithRedirectCheck` /
+  `WithoutRetries`. New commands: `seed-priority`, `priority-report`, `ingest --providers=`.
+- **Trust rules found by running against the real sites (2026-09-24):** company sites and feeds
+  are stale (Kifiya's careers site still lists Feb 2025 postings; EthSwitch/ZalaTech feeds end
+  in 2024/2023; Zare's five postings expired in July), so dated items older than 120 days or
+  past `validThrough` are dropped; 12 of 13 sampled Ethiojobs postings were closed, so only
+  `status: active` with a future expiry is accepted; search returns look-alike companies (Chapa
+  De Indian Health, Chaka Gebeya) and a same-named company abroad (DreamTech, Noida), so a
+  LinkedIn result needs an exact company match in its URL slug plus an Ethiopia signal
+  (`hires_outside_ethiopia` is set only for Gebeya). LinkedIn pages are never fetched.
+- **Search source is opt-in and metered:** two Serper queries per company (50 per run), one
+  call = one wire request, capped by `SEARCH_MAX_QUERIES_PER_RUN` (default 60), never part of a
+  plain `ingest`. Search is a sample, so its jobs close only after 21 unseen days
+  (`ingestion.PartialClient`), except jobs the source reports as ended, which close at once
+  (`ats.Job.Closed` + `job.Store.CloseBySourceID`).
+- **Measured coverage:** 4 of 25 companies have an open job (8 jobs: EthSwitch 4, Addis Software
+  2, Kifiya 1, Zare 1); 11 of the 25 have no findable careers page or feed and search found
+  nothing current for them. Report: `aggregator priority-report`.
+- **Review:** two independent adversarial critic rounds. Round 1 REJECT (redirects bypassed
+  robots.txt, Serper retries multiplied wire requests past the budget, robots parser failed open
+  on BOM/CR/percent-encoding/prefix-agent, ended jobs lingered, silent truncation, dedupe merged
+  different-country openings); all fixed with tests through the real `httpclient`. Round 2
+  ACCEPT with should-fixes (feed date forms, query-string job identity, non-job careers links,
+  Ethiojobs fetch spacing, duplicate copies, non-ASCII titles), all fixed; 28 mutations of the
+  load-bearing logic were all caught by the tests. Critic files: `/tmp/ethiopian-priority/critique/`.
+- **Known limits (also in the doc):** a 404 on a careers page or feed deactivates its target
+  until `seed-priority` is re-run; a careers page with zero job links is an error (so a
+  company's last removed posting lingers until someone looks); search returns 10 results per
+  query; `nameKey` drops `Ethiopia`/`Co`/`PLC` suffixes.
+
 ## 3. Work In Progress
 
-PRs #3–#8 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
-feature note) are all merged. **Phase 3 is code-complete and reviewed** but has outstanding
-administrative steps, not development work:
+PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
+feature note, Phase 3) are merged. The **Ethiopian priority companies** work (Section 2) is
+code-complete, reviewed twice, and on branch `Bantamlak21/ethiopian-priority-e451cddd`; its PR
+is opened by the session that wrote it (see the PR list on GitHub), and the frontend changes for
+it (badge, filter, tests) are in `remote-job-aggregator-web` (uncommitted or committed locally on
+`init`, no remote). The Phase 3 notes below are historical:
 
 1. The Phase 3 backend change (branch `Bantamlak21/phase3-ats-ingestion-e451cddd`) is open as
    **PR #9** (https://github.com/Bantamlak12/remote-job-aggregator/pull/9), not yet merged as
@@ -804,9 +852,11 @@ Confusion-Protocol-style scoping conversation before building, not a quick bolt-
 
 ## 5. Current Database State
 
-**Migrations:** one — `000001_init_schema` (up + down), applied and clean
-(`schema_migrations`: version 1, dirty=false). Phase 2 added no migration; it only added Go
-code (`internal/company`) over the tables Phase 1 already created.
+**Migrations:** two — `000001_init_schema` and `000002_company_priority` (adds
+`companies.is_priority BOOLEAN NOT NULL DEFAULT false`), each with up + down, applied and clean
+(`schema_migrations`: version 2, dirty=false). `migrate-down` (one step) now undoes only 000002.
+Phase 2 added no migration; it only added Go code (`internal/company`) over the tables Phase 1
+already created.
 
 **Tables:**
 
@@ -1063,6 +1113,10 @@ because none of that code exists yet.
   modernize both together if ever.
 
 ## 9. Exact Next Step
+
+**Before Phase 4:** run `aggregator migrate-up`, `seed-priority`, and (with `SERPER_API_KEY`)
+`ingest --providers=search` on the target database, and restart `aggregator serve`; schedule
+`ingest` daily and the search source weekly (see docs/priority-companies.md). Then:
 
 **Start Phase 4: geographic eligibility & relevance filtering** (`internal/filtering`, plus a
 `job_eligibility` migration). Phase 3 deliberately ingests every job as `remote_type =

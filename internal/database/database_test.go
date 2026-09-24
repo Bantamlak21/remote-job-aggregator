@@ -218,17 +218,6 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 		}
 	})
 
-	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
-		t.Fatalf("MigrateDownStep() failed: %v", err)
-	}
-
-	// Idempotent at the bottom: stepping back again with nothing left
-	// must be a no-op, not an error — mirrors MigrateDown/MigrateUp's
-	// ErrNoChange handling.
-	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
-		t.Fatalf("second MigrateDownStep() call (nothing left to roll back) failed: %v", err)
-	}
-
 	ctx := context.Background()
 	db, err := database.New(ctx, dbConfig(url))
 	if err != nil {
@@ -236,18 +225,52 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 	}
 	defer db.Close()
 
-	// This repo has exactly one migration, so rolling back "one step"
-	// removes everything it created — same observable effect as
-	// MigrateDown here, but this exercises Steps(-1) specifically rather
-	// than Down().
-	var exists bool
-	if err := db.Pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'jobs')`,
-	).Scan(&exists); err != nil {
-		t.Fatalf("checking table existence: %v", err)
+	tableExists := func() bool {
+		t.Helper()
+		var exists bool
+		if err := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'jobs')`,
+		).Scan(&exists); err != nil {
+			t.Fatalf("checking table existence: %v", err)
+		}
+		return exists
 	}
-	if exists {
-		t.Error("table \"jobs\" still exists after MigrateDownStep()")
+	priorityColumnExists := func() bool {
+		t.Helper()
+		var exists bool
+		if err := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'companies' AND column_name = 'is_priority')`,
+		).Scan(&exists); err != nil {
+			t.Fatalf("checking column existence: %v", err)
+		}
+		return exists
+	}
+
+	// Step 1 undoes only the latest migration (000002's is_priority
+	// column); the Phase 1 tables must survive it.
+	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
+		t.Fatalf("MigrateDownStep() failed: %v", err)
+	}
+	if priorityColumnExists() {
+		t.Error("companies.is_priority still exists after the first MigrateDownStep()")
+	}
+	if !tableExists() {
+		t.Error("table \"jobs\" vanished after one MigrateDownStep(); only the latest migration should be undone")
+	}
+
+	// Step 2 undoes 000001, which removes everything it created.
+	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
+		t.Fatalf("second MigrateDownStep() failed: %v", err)
+	}
+	if tableExists() {
+		t.Error("table \"jobs\" still exists after rolling back the initial migration")
+	}
+
+	// Idempotent at the bottom: stepping back again with nothing left
+	// must be a no-op, not an error — mirrors MigrateDown/MigrateUp's
+	// ErrNoChange handling.
+	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
+		t.Fatalf("third MigrateDownStep() call (nothing left to roll back) failed: %v", err)
 	}
 }
 
@@ -336,13 +359,19 @@ func TestMigrateDownStep_ReturnsErrorOnAlreadyCanceledContext(t *testing.T) {
 	}
 }
 
+// latestMigrationVersion is the highest version in migrations/. Tests that
+// force the schema_migrations row use it so they leave the schema state
+// consistent with the tables that actually exist; bump it with every new
+// migration.
+const latestMigrationVersion = 2
+
 func TestMigrateForce_ClearsDirtyState(t *testing.T) {
 	url := testDatabaseURL(t)
 	if err := database.MigrateUp(context.Background(), url, migrations.FS); err != nil {
 		t.Fatalf("MigrateUp() failed: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = database.MigrateForce(url, migrations.FS, 1)
+		_ = database.MigrateForce(url, migrations.FS, latestMigrationVersion)
 		if err := database.MigrateDown(context.Background(), url, migrations.FS); err != nil {
 			t.Errorf("cleanup MigrateDown() failed: %v", err)
 		}
@@ -366,7 +395,7 @@ func TestMigrateForce_ClearsDirtyState(t *testing.T) {
 		t.Fatal("MigrateUp() succeeded against a dirty schema_migrations row, want an error")
 	}
 
-	if err := database.MigrateForce(url, migrations.FS, 1); err != nil {
+	if err := database.MigrateForce(url, migrations.FS, latestMigrationVersion); err != nil {
 		t.Fatalf("MigrateForce() failed to clear the dirty state: %v", err)
 	}
 

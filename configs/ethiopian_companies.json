@@ -1,0 +1,29 @@
+{
+  "companies": [
+    {"name": "Gebeya Inc.", "aliases": ["Gebeya", "Gebeya Developer As A Service P.L.C"], "website": "https://gebeya.com", "hires_outside_ethiopia": true},
+    {"name": "Chapa Financial Technologies", "aliases": ["Chapa"], "website": "https://chapa.co"},
+    {"name": "Hisab Technologies"},
+    {"name": "EthSwitch", "website": "https://ethswitch.com", "feeds": ["https://ethswitch.com/jobs/feed/"]},
+    {"name": "Apposit"},
+    {"name": "Addis Software", "website": "https://addissoftware.com", "career_pages": ["https://erp.addissoftware.com/jobs"]},
+    {"name": "Wizard Labs"},
+    {"name": "4Africa Systems"},
+    {"name": "Belcash Technology Solutions"},
+    {"name": "Kifiya Financial Technology", "aliases": ["Kifiya Financial Technologies", "Kifiya"], "website": "https://kifiya.com", "career_pages": ["https://kifiya.com/jobs/"]},
+    {"name": "EagleLion System Technology", "aliases": ["EagleLion", "Eagle Lion System Technology"], "website": "https://www.eaglelionsystems.com"},
+    {"name": "Cybersoft PLC"},
+    {"name": "ERP Solutions PLC"},
+    {"name": "251 Technologies"},
+    {"name": "Zare Innovations", "website": "https://zareinnovations.com", "career_pages": ["https://zareinnovations.com/careers"]},
+    {"name": "ZEMEL IT SYSTEMS PLC"},
+    {"name": "iceaddis", "aliases": ["ICE Addis"]},
+    {"name": "Parallel Solutions"},
+    {"name": "Ashewa Technology Solution", "aliases": ["Ashewa Technology Solutions", "Ashewa Technology"], "website": "https://ashewatechnology.com"},
+    {"name": "Lelna AI"},
+    {"name": "Ahun"},
+    {"name": "Dalol Web Services"},
+    {"name": "360 Ground"},
+    {"name": "ZalaTech", "aliases": ["Zala Tech"], "website": "https://zalatechs.com", "feeds": ["https://zalatechs.com/jobs/feed/"]},
+    {"name": "DreamTech", "aliases": ["Dream Tech"], "website": "https://dreamtech.et"}
+  ]
+}
