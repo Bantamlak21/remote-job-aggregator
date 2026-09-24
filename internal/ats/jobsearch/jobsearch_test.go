@@ -189,31 +189,31 @@ func TestLinkedInJob_AcceptsRealResultShapes(t *testing.T) {
 	}{
 		{
 			"apply-for snippet, pretty title from result title",
-			li("https://et.linkedin.com/jobs/view/product-manager-payment-solutions-at-chapa-3945687335",
+			li("https://et.linkedin.com/jobs/view/product-manager-payment-solutions-at-chapa-4470000001",
 				"Product Manager - Payment Solutions at Chapa - LinkedIn Ethiopia",
 				"Apply for Product Manager - Payment Solutions at Chapa in Ethiopia. Full-time Not Applicable role. See responsibilities...",
 				"5 days ago"),
-			"linkedin:3945687335", "Product Manager - Payment Solutions", "Ethiopia",
+			"linkedin:4470000001", "Product Manager - Payment Solutions", "Ethiopia",
 		},
 		{
 			"hiring-style title keeps punctuation the slug loses",
-			li("https://et.linkedin.com/jobs/view/ui-ux-designer-at-chapa-3945476980",
+			li("https://et.linkedin.com/jobs/view/ui-ux-designer-at-chapa-4470000002",
 				"Chapa hiring UI/UX Designer in Ethiopia | LinkedIn",
 				"Chapa Ethiopia. 2 weeks ago Be among the first 25 applicants.", "2 weeks ago"),
-			"linkedin:3945476980", "UI/UX Designer", "Ethiopia",
+			"linkedin:4470000002", "UI/UX Designer", "Ethiopia",
 		},
 		{
 			"www host and a tracking query string",
-			li("https://www.linkedin.com/jobs/view/senior-accountant-at-chapa-4166950109?trk=public_jobs&position=1#x",
+			li("https://www.linkedin.com/jobs/view/senior-accountant-at-chapa-4470000003?trk=public_jobs&position=1#x",
 				"Senior Accountant at Chapa - LinkedIn Ethiopia",
 				"Apply for Senior Accountant at Chapa in Addis Ababa, Addis Ababa, Ethiopia. Full-time Mid-Senior level role.", "Sep 14, 2026"),
-			"linkedin:4166950109", "Senior Accountant", "Addis Ababa, Addis Ababa, Ethiopia",
+			"linkedin:4470000003", "Senior Accountant", "Addis Ababa, Addis Ababa, Ethiopia",
 		},
 		{
 			"truncated result title falls back to the slug",
-			li("https://et.linkedin.com/jobs/view/data-analyst-at-chapa-financial-technologies-s-c-3945684459",
+			li("https://et.linkedin.com/jobs/view/data-analyst-at-chapa-financial-technologies-s-c-4470000004",
 				"...", "", ""),
-			"linkedin:3945684459", "Data Analyst", "",
+			"linkedin:4470000004", "Data Analyst", "",
 		},
 	}
 	for _, tc := range cases {
@@ -295,7 +295,7 @@ func TestLinkedInJob_SameNamedCompanyInAnotherCountryIsRejected(t *testing.T) {
 
 func TestLinkedInJob_CompaniesThatHireAbroadKeepTheirForeignJobs(t *testing.T) {
 	gebeya := matchFor("Gebeya Inc.")
-	kenya := li("https://ke.linkedin.com/jobs/view/talent-specialist-job-matching-at-gebeya-inc-3633345749",
+	kenya := li("https://ke.linkedin.com/jobs/view/talent-specialist-job-matching-at-gebeya-inc-4470000005",
 		"Talent Specialist - Job Matching at Gebeya Inc. — Nairobi County",
 		"Apply for Talent Specialist - Job Matching at Gebeya Inc. in Nairobi County, Kenya. Contract role.", "3 days ago")
 	job, reason := linkedInJob(kenya, gebeya, fixedNow)
@@ -329,7 +329,7 @@ func TestEthiopiaSignal(t *testing.T) {
 
 func TestLinkedInJob_TitleThatItselfContainsAt(t *testing.T) {
 	m := matchFor("Chapa Financial Technologies")
-	job, reason := linkedInJob(li("https://et.linkedin.com/jobs/view/engineer-at-scale-at-chapa-1234567",
+	job, reason := linkedInJob(li("https://et.linkedin.com/jobs/view/engineer-at-scale-at-chapa-4470000006",
 		"Engineer at Scale at Chapa - LinkedIn", "", "1 day ago"), m, fixedNow)
 	if reason != "" || job.Title != "Engineer at Scale" {
 		t.Errorf("job = %+v, reason = %q; want title %q", job, reason, "Engineer at Scale")
@@ -338,7 +338,7 @@ func TestLinkedInJob_TitleThatItselfContainsAt(t *testing.T) {
 
 func TestLinkedInJob_FreshnessRules(t *testing.T) {
 	m := matchFor("Chapa Financial Technologies")
-	const u = "https://et.linkedin.com/jobs/view/data-analyst-at-chapa-3945684459"
+	const u = "https://et.linkedin.com/jobs/view/data-analyst-at-chapa-4470000004"
 	cases := []struct {
 		name    string
 		snippet string
@@ -358,11 +358,11 @@ func TestLinkedInJob_FreshnessRules(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			job, reason := linkedInJob(li(u, "Data Analyst at Chapa", tc.snippet, tc.date), m, fixedNow)
-			if tc.want == "closed" {
+			if tc.want == "closed" || tc.want == "too-old" {
 				// Not a rejection: the result reports the job as ended, so it
 				// is returned as a closure for ingestion to act on.
-				if reason != "" || !job.Closed || job.ExternalID != "linkedin:3945684459" || job.Title != "" {
-					t.Errorf("job = %+v, reason = %q; want a bare closure marker for linkedin:3945684459", job, reason)
+				if reason != "" || !job.Closed || job.ExternalID != "linkedin:4470000004" || job.Title != "" {
+					t.Errorf("job = %+v, reason = %q; want a bare closure marker for linkedin:4470000004", job, reason)
 				}
 				return
 			}
@@ -372,10 +372,79 @@ func TestLinkedInJob_FreshnessRules(t *testing.T) {
 			if reason == "" && job.Closed {
 				t.Errorf("a live job was marked closed: %+v", job)
 			}
-			if tc.want == "" && tc.date == "3 days ago" && !job.PublishedAt.Equal(fixedNow.Add(-72*time.Hour)) {
-				t.Errorf("PublishedAt = %v, want the parsed result date", job.PublishedAt)
+			// The posting date comes from the job id, never from Google's
+			// date (which can be a crawl date).
+			if tc.want == "" && !job.PublishedAt.Equal(estimatePostedFromID(4470000004)) {
+				t.Errorf("PublishedAt = %v, want the id-based estimate %v", job.PublishedAt, estimatePostedFromID(4470000004))
 			}
 		})
+	}
+}
+
+// The bug the user reported: old LinkedIn jobs showed "1 month ago" because
+// Google's date beside the result is a crawl date. These are REAL results
+// captured on 2026-09-24 where Google's date was recent (or absent) and the
+// job was far older; the id says so.
+func TestLinkedInJob_OldJobsWithARecentGoogleDateAreRejected(t *testing.T) {
+	zare := matchFor("Kifiya Financial Technology") // any company in the fixture; the id is what matters
+	cases := []struct {
+		name, url, googleDate string
+	}{
+		{"Zare 'Virtual Assistant' (~18 months old) shown as 1 month ago", "https://et.linkedin.com/jobs/view/senior-accountant-at-kifiya-financial-technology-plc-4225170741", "Aug 24, 2026"},
+		{"a 2025 posting with a '3 days ago' crawl date", "https://et.linkedin.com/jobs/view/senior-accountant-at-kifiya-financial-technology-plc-4266303883", "3 days ago"},
+		{"a 2026-05 posting with a September crawl date", "https://et.linkedin.com/jobs/view/senior-accountant-at-kifiya-financial-technology-plc-4416249158", "Sep 10, 2026"},
+		{"an old posting with no Google date at all", "https://et.linkedin.com/jobs/view/senior-accountant-at-kifiya-financial-technology-plc-4337931261", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			job, reason := linkedInJob(li(tc.url, "Senior Accountant at Kifiya", "Apply in Ethiopia.", tc.googleDate), zare, fixedNow)
+			// Not shown, and reported as ended so a copy stored by an earlier
+			// (wrongly dated) run is closed at once.
+			if reason != "" || !job.Closed || job.Title != "" {
+				t.Errorf("job = %+v, reason = %q; want a bare closure marker", job, reason)
+			}
+		})
+	}
+}
+
+func TestEstimatePostedFromID(t *testing.T) {
+	// Anchors (must be exact) and independent checkpoints from real results
+	// (Google dates, which for old jobs are close to posting dates): within 12 days.
+	if got := estimatePostedFromID(anchorOldID); !got.Equal(anchorOldTime) {
+		t.Errorf("old anchor = %v, want %v", got, anchorOldTime)
+	}
+	checks := []struct {
+		id   int64
+		want time.Time
+	}{
+		{4404170965, time.Date(2026, 4, 23, 0, 0, 0, 0, time.UTC)},
+		{4420905329, time.Date(2026, 5, 28, 0, 0, 0, 0, time.UTC)},
+		{4341349159, time.Date(2025, 11, 18, 0, 0, 0, 0, time.UTC)},
+		{4335092464, time.Date(2025, 11, 12, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, c := range checks {
+		got := estimatePostedFromID(c.id)
+		if diff := got.Sub(c.want); diff > 12*24*time.Hour || diff < -12*24*time.Hour {
+			t.Errorf("estimatePostedFromID(%d) = %v, more than 12 days from %v", c.id, got, c.want)
+		}
+	}
+	// Monotonic.
+	if !estimatePostedFromID(4470000000).After(estimatePostedFromID(4460000000)) {
+		t.Error("a larger id must never be estimated as older")
+	}
+}
+
+func TestLinkedInJob_ACurrentJobIsKeptAndDatedFromItsID(t *testing.T) {
+	m := matchFor("Chapa Financial Technologies")
+	// An id from the day of the run, and one clamped from the future.
+	for _, id := range []string{"4471199696", "4999999999"} {
+		job, reason := linkedInJob(li("https://et.linkedin.com/jobs/view/data-analyst-at-chapa-"+id, "Data Analyst at Chapa", "in Ethiopia.", ""), m, fixedNow)
+		if reason != "" {
+			t.Fatalf("id %s rejected: %s", id, reason)
+		}
+		if job.PublishedAt.After(fixedNow) || fixedNow.Sub(job.PublishedAt) > 5*24*time.Hour {
+			t.Errorf("id %s: PublishedAt = %v, want within days before now (%v)", id, job.PublishedAt, fixedNow)
+		}
 	}
 }
 
@@ -515,9 +584,9 @@ func TestEthiojobsJob_AliasCompanyNameMatches(t *testing.T) {
 func TestListJobs_CombinesBothSitesAndDedupesByTitle(t *testing.T) {
 	s := &fakeSearcher{bySite: map[string][]search.Result{
 		"linkedin.com/jobs/view": {
-			li("https://et.linkedin.com/jobs/view/senior-compliance-officer-at-ethswitch-4400000001", "Senior Compliance Officer at EthSwitch - LinkedIn", "", "2 days ago"),
-			li("https://et.linkedin.com/jobs/view/driver-at-ethswitch-4400000002", "Driver at EthSwitch - LinkedIn", "", "3 days ago"),
-			li("https://et.linkedin.com/jobs/view/analyst-at-some-other-bank-4400000003", "Analyst at Some Other Bank", "", "1 day ago"),
+			li("https://et.linkedin.com/jobs/view/senior-compliance-officer-at-ethswitch-4470000011", "Senior Compliance Officer at EthSwitch - LinkedIn", "", "2 days ago"),
+			li("https://et.linkedin.com/jobs/view/driver-at-ethswitch-4470000012", "Driver at EthSwitch - LinkedIn", "", "3 days ago"),
+			li("https://et.linkedin.com/jobs/view/analyst-at-some-other-bank-4470000013", "Analyst at Some Other Bank", "", "1 day ago"),
 		},
 		"ethiojobs.net/job": {
 			li("https://ethiojobs.net/job/Ubd2cAJy92-senior-compliance-officer", "Senior Compliance Officer", "", ""),
@@ -546,13 +615,13 @@ func TestListJobs_CombinesBothSitesAndDedupesByTitle(t *testing.T) {
 			"the compliance officer (the other bank and the company page are rejected)",
 			len(jobs), ids(jobs))
 	}
-	if dup := got["linkedin:4400000001"]; !dup.Closed {
+	if dup := got["linkedin:4470000011"]; !dup.Closed {
 		t.Errorf("the LinkedIn duplicate = %+v, want a closure marker so an earlier-stored copy does not show twice", dup)
 	}
 	if ended := got["ethiojobs:xBLzjWk2fj"]; !ended.Closed {
 		t.Errorf("the closed Ethiojobs posting = %+v, want a closure marker so a stored copy is closed at once", ended)
 	}
-	for _, id := range []string{"ethiojobs:Ubd2cAJy92", "linkedin:4400000002"} {
+	for _, id := range []string{"ethiojobs:Ubd2cAJy92", "linkedin:4470000012"} {
 		if got[id].Closed || got[id].Title == "" {
 			t.Errorf("%s = %+v, want a live job", id, got[id])
 		}
@@ -560,7 +629,7 @@ func TestListJobs_CombinesBothSitesAndDedupesByTitle(t *testing.T) {
 	if _, ok := got["ethiojobs:Ubd2cAJy92"]; !ok {
 		t.Errorf("missing the Ethiojobs job; got %v (Ethiojobs' richer record must win the duplicate)", ids(jobs))
 	}
-	if _, ok := got["linkedin:4400000002"]; !ok {
+	if _, ok := got["linkedin:4470000012"]; !ok {
 		t.Errorf("missing the LinkedIn driver job; got %v", ids(jobs))
 	}
 

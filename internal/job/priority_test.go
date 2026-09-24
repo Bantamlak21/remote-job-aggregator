@@ -257,6 +257,49 @@ func TestStoreCloseBySourceID_ClosesOnlyThoseOpenJobsOfThatTarget(t *testing.T) 
 	}
 }
 
+// A corrected publish date must replace a wrong stored one (LinkedIn jobs
+// were first stored with Google's crawl date), while an absent date must
+// never erase a known one.
+func TestStoreUpsert_NewPublishDateReplacesTheStoredOneButAbsentKeepsIt(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	targetID, companyID := seedTarget(t, ctx, db, "Acme", "acme")
+	store := NewStore(db.Pool)
+
+	published := func() time.Time {
+		t.Helper()
+		var p time.Time
+		if err := db.Pool.QueryRow(ctx, `SELECT published_at FROM jobs WHERE source_job_id = 'j'`).Scan(&p); err != nil {
+			t.Fatalf("reading published_at: %v", err)
+		}
+		return p
+	}
+
+	wrong := time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC)
+	right := time.Date(2025, 3, 2, 0, 0, 0, 0, time.UTC)
+
+	r := baseRecord(targetID, companyID, "j")
+	r.PublishedAt = wrong
+	if _, err := store.UpsertFromATS(ctx, r); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	r.PublishedAt = right
+	if _, err := store.UpsertFromATS(ctx, r); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if got := published(); !got.Equal(right) {
+		t.Errorf("published_at = %v, want the newly supplied %v", got, right)
+	}
+
+	r.PublishedAt = time.Time{}
+	if _, err := store.UpsertFromATS(ctx, r); err != nil {
+		t.Fatalf("third upsert: %v", err)
+	}
+	if got := published(); !got.Equal(right) {
+		t.Errorf("published_at = %v after an upsert with no date, want %v kept", got, right)
+	}
+}
+
 func TestStoreCloseStale_RejectsNonPositiveWindow(t *testing.T) {
 	db := newDB(t)
 	store := NewStore(db.Pool)

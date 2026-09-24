@@ -34,6 +34,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -298,12 +299,23 @@ func linkedInJob(r search.Result, m companyMatch, now time.Time) (ats.Job, strin
 	if !m.company.HiresOutsideEthiopia && !ethiopiaSignal(u.Host, location, r) {
 		return ats.Job{}, "outside-ethiopia"
 	}
-	var published time.Time
-	if d := parseResultDate(r.Date, now); !d.IsZero() {
-		if now.Sub(d) > linkedInMaxAge {
-			return ats.Job{}, "too-old"
+	// Age. Google's date beside a result is often the day it crawled the
+	// page, not the day the job was posted (found live: a job ~18 months
+	// old showed "1 month ago"), so it is only ever used to REJECT. The
+	// posting date is estimated from LinkedIn's job id, which grows steadily
+	// with time; see estimatePostedFromID.
+	if d := parseResultDate(r.Date, now); !d.IsZero() && now.Sub(d) > linkedInMaxAge {
+		return ats.Job{ExternalID: "linkedin:" + id, Closed: true}, ""
+	}
+	published := time.Time{}
+	if n, err := strconv.ParseInt(id, 10, 64); err == nil {
+		published = estimatePostedFromID(n)
+		if published.After(now) {
+			published = now
 		}
-		published = d
+		if now.Sub(published) > linkedInMaxAge {
+			return ats.Job{ExternalID: "linkedin:" + id, Closed: true}, ""
+		}
 	}
 
 	title := prettyTitle(titleSlug, r.Title)
@@ -318,6 +330,36 @@ func linkedInJob(r search.Result, m companyMatch, now time.Time) (ats.Job, strin
 		Description: ats.CleanText(r.Snippet),
 		PublishedAt: published,
 	}, ""
+}
+
+// LinkedIn job ids increase with time at a roughly constant rate (checked
+// live against about 70 results: the linear model below is within about two
+// weeks across a year; e.g. it puts id 4404170965 at 2026-04-19 where Google
+// said 2026-04-23, and id 4341349159 at 2025-11-22 where Google said
+// 2025-11-18). Two anchors fix the line:
+//
+//   - id 4437765344 was posted 2026-07-07T08:16:27Z: Zare Innovations' own
+//     careers page (JSON-LD datePosted) for the same "Full-Stack AI
+//     Engineer" posting.
+//   - id 4471199696 was posted no earlier than 2026-09-24T00:00Z: Google
+//     showed it as "9 hours ago" on 2026-09-24.
+//
+// The rate is about 425,000 ids per day. A linear model drifts if LinkedIn's
+// rate changes; re-anchor (new id + date pair) every few months, or when
+// freshly posted jobs start looking old. Beyond the newest anchor the
+// estimate can exceed "now"; callers clamp it.
+const (
+	anchorOldID    = 4437765344
+	anchorNewID    = 4471199696
+	idsPerDayScale = float64(anchorNewID-anchorOldID) / 78.6467 // days between the anchors
+)
+
+var anchorOldTime = time.Date(2026, 7, 7, 8, 16, 27, 0, time.UTC)
+
+// estimatePostedFromID estimates when a LinkedIn job was posted from its id.
+func estimatePostedFromID(id int64) time.Time {
+	days := float64(id-anchorOldID) / idsPerDayScale
+	return anchorOldTime.Add(time.Duration(days * float64(24*time.Hour)))
 }
 
 // splitCompanySlug splits "<title>-at-<company>" at an "-at-" such that the

@@ -163,8 +163,16 @@ after a run, look at `target not ingested` warnings first.
   with the same title in Addis Ababa collapse into one.
 - **A name is not an identity.** `nameKey` drops trailing corporate words (`Inc`, `PLC`,
   `S.C.`, `Co`, `Ethiopia`), so "Chapa Ethiopia" is accepted as Chapa.
-- **Dates from search results are approximate** ("3 days ago" is converted to a timestamp),
-  so `posted_at` for LinkedIn jobs is a best estimate.
+- **LinkedIn posting dates are estimated from the job id, not taken from Google.** Google's
+  date beside a result is often the day it crawled the page (found live: a job about 18
+  months old showed "1 month ago"). LinkedIn job ids grow steadily with time, so a linear
+  model fitted on two anchors (`estimatePostedFromID` in `internal/ats/jobsearch`) dates a
+  job to within about two weeks over a year (checked against ~70 real results). A job whose
+  estimated age exceeds 45 days is not shown, and is reported as ended so a copy stored by
+  an earlier run is closed. Google's date is only ever used to reject. **The two anchors
+  are constants: re-anchor them (one new id + posting date pair) every few months, or when
+  fresh postings start being rejected or old ones accepted.** Ethiojobs and careers-page
+  dates are the sites' own and are exact.
 - **Location** for LinkedIn jobs is read from the result text and is empty when the text has
   none. Classifying remote/onsite and eligibility is Phase 4.
 - **Company-name collisions** are reduced, not eliminated: a same-named company that also has
