@@ -155,6 +155,19 @@ func TestStaleBoards(t *testing.T) {
 	}
 }
 
+// Titles are keyed by lower-cased, trimmed name; a mixed-case or padded name
+// must still find them.
+func TestAttachTitles_FindsTitlesWhateverTheNamesCase(t *testing.T) {
+	titles := map[string][]string{"ramp": {"Growth Lead"}, "grafana labs": {"SRE"}}
+	got := attachTitles([]string{"Ramp", "  Grafana Labs ", "Nobody"}, titles)
+	if len(got) != 3 || len(got[0].Titles) != 1 || len(got[1].Titles) != 1 || len(got[2].Titles) != 0 {
+		t.Errorf("entries = %+v, want titles for Ramp and Grafana Labs only", got)
+	}
+	if got[1].Name != "  Grafana Labs " {
+		t.Errorf("the name was changed: %q", got[1].Name)
+	}
+}
+
 func TestUncheckedNames(t *testing.T) {
 	got := uncheckedNames(discovery.GuessReport{
 		Unreached: []string{"Alpha Co"},

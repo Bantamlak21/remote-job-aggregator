@@ -50,7 +50,7 @@ were exactly that (a "Wise" that is an insurer, a "Neon" that is a Brazilian ban
 retail inventory). So the rules are strict, and everything refused is logged so a person can decide:
 
 - **A domain in the names file is proof.** `Ramp | ramp.com`: the board is accepted if its job text
-  (Lever and Ashby: the first eight listed jobs; Greenhouse: the first job) contains `ramp.com`, whatever
+  (Lever and Ashby: the first eight listed jobs; Greenhouse: the first three, one request each) contains `ramp.com`, whatever
   the board calls itself. The domains in the list were each checked against a live board.
 - **Otherwise, the name:** Greenhouse must name the board exactly as the company is named (ignoring
   `Inc`, `PLC` and a trailing `.io`/`.com` on the board's name; "Grafana" is not "Grafana Labs"). Lever
@@ -69,8 +69,12 @@ retail inventory). So the rules are strict, and everything refused is logged so 
   of that employer's job titles.** The job boards' own rows for the employer are the second witness: an
   insurer called Sentry, a "Ramp Agent" at an airline and a "Linear Accelerator Technician" all pass the
   name rule and share no title with the software company. The whole board's titles are compared (case and
-  punctuation ignored); a board with a domain proof needs no titles. A board refused for this reason is
-  reported as "lists none of the employer's job titles".
+  punctuation ignored, and a bracketed note or a trailing "remote" dropped); a board with a domain proof
+  needs no titles. One shared title is enough only if it is not a generic one ("Software Engineer",
+  "Product Manager" and about 25 more are on any board); two shared titles always are. A board refused
+  for this reason is reported as "lists none of the employer's job titles". Reading every title means
+  reading the whole board (Ashby has no limit parameter, and the read is capped at 32 MB) for each slug
+  variant, so `--from-boards` costs more per name than the curated list does.
 - Names with non-ASCII letters have no reliable slug and are not looked up. A board with no jobs is
   not registered.
 
@@ -90,9 +94,10 @@ jobs closed) only when all of these hold:
 
 - `discover-boards` registered it (`discovery_metadata.source = "discover-boards"`); a board a person
   seeded is never touched;
-- the look-up found the board and it **names itself as another company's** (a Greenhouse board named
-  "Fin" for Intercom; Lever and Ashby boards do not carry a name, so no board there can be positive
-  evidence of this kind);
+- the look-up found the board and it **names itself as another company's**: a Greenhouse board whose
+  name shares no word with the company's ("Fin" for Intercom). A board titled "Pantheon Systems, Inc"
+  or "Backblaze External Website" shares a word and is only unproven. Lever and Ashby boards do not
+  carry a name, so no board there can be positive evidence of this kind;
 - the company was fully checked (no failed probe, not left unreached).
 
 Everything else that did not verify is not evidence and is only reported: a board that does not say
@@ -106,18 +111,21 @@ containing `: ` reads back correctly.
 
 - The curated list has 404 names. Under the final rules, after the looser first pass was re-checked
   (42 of 179 boards deactivated, including the 6 known to be another company's), the list gives
-  **210 companies with an active board** (111 Greenhouse, 84 Ashby, 15 Lever; 30 more boards are
-  registered but inactive). Ten names got a domain (Buffer, Intercom, Mux, Thinkific, Chime, Nord
-  Security, Doppler, Clerk, Outschool, Yugabyte): each was accepted only because its live board's job
-  text carries the domain. Nine more domain guesses (HubSpot, Fly.io, Backblaze, Remofirst, Aha, Kinsta,
-  Lucidworks, Tinybird, Lightspeed) were not found in any job of their boards and were left out of the
-  list, so those boards stay unregistered until a domain their jobs do carry is found.
+  **213 companies with an active board** (112 Greenhouse, 86 Ashby, 15 Lever; 27 more boards are
+  registered but inactive). Thirteen names got a domain (Buffer, Intercom, Mux, Thinkific, Chime, Nord
+  Security, Doppler, Clerk, Outschool, Yugabyte, Kit, Warp, Terminal as `withterminal.com`): each was
+  accepted only because its live board's job text carries the domain. Fifteen other guesses (HubSpot,
+  Fly.io, Backblaze, Remofirst, Aha, Kinsta, Lucidworks, Tinybird, Lightspeed, Temporal, Mercury,
+  Neon, Polar, Nomad, and the first Terminal guess) were found in no job of their boards and are left
+  out of the list. Several are real companies with jobs on their boards (Temporal 65, Mercury 62,
+  Backblaze 34, about 230 jobs in all); they stay unregistered, and hidden, until a domain their jobs
+  do carry is found. That is the recall this policy costs.
 - `--from-boards` found boards among the employers the remote job boards showed. Requiring a shared job
-  title also flagged the one wrong board among them (Anagram, a crypto research firm, taken for the
-  security-training company a job board showed); it was deactivated by hand. Four real boards (Coalfire,
+  title also flagged the one wrong board among them (Anagram: the Ashby board is a crypto firm, not the
+  company a job board showed under that name); it was deactivated by hand. Four real boards (Coalfire,
   Elsevier, JumpCloud, Toptal) share no title with the few listings a job board has and are left active.
 - Ingesting the ATSs took about a minute for 111 Greenhouse targets. The worldwide list then held
-  15,954 open jobs from 818 companies: 5,262 classified remote, 4,017 posted in the last 15 days.
+  15,960 open jobs from 819 companies: 5,263 classified remote, 4,018 posted in the last 15 days.
 
 ## Limits
 

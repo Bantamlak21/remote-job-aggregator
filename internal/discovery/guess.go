@@ -288,6 +288,33 @@ func tokens(s string) []string {
 	return strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 }
 
+// sharesNameWord reports whether the board's name has a word of ours (legal
+// forms and web-address endings ignored): "Pantheon Systems, Inc" for
+// Pantheon, "Backblaze External Website" for Backblaze.
+func sharesNameWord(ours, board string) bool {
+	have := map[string]bool{}
+	for _, t := range nameTokens(stripDomain(board)) {
+		have[strings.ToLower(t)] = true
+	}
+	for _, t := range nameTokens(ours) {
+		if have[strings.ToLower(t)] {
+			return true
+		}
+	}
+	return false
+}
+
+// notTheCompanys is the verdict for a Greenhouse board whose name is not the
+// company's: named for another company only when it shares no word with ours
+// (a company retitling its board, or a board with a suffix, is merely
+// unproven, and no re-check may act on that).
+func notTheCompanys(ours, board string) verdict {
+	if sharesNameWord(ours, board) {
+		return boardForeign
+	}
+	return boardNamedOther
+}
+
 var legalForms = map[string]bool{"inc": true, "llc": true, "ltd": true, "plc": true, "gmbh": true, "corp": true, "corporation": true, "co": true, "sa": true, "ag": true, "bv": true}
 
 // nameTokens is the company name as words with legal-form endings dropped.
@@ -398,22 +425,79 @@ func nameProof(e Entry, texts []string, listed int) bool {
 	return hits >= (len(texts)+1)/2
 }
 
-// sharesTitle reports whether any of the board's job titles is one of the
-// entry's employer titles (compared as companymatch.TitleKey).
+// genericTitles are job titles that any company on any board lists; sharing
+// only one of them proves nothing (a foreign "Ramp" board with "Ramp Agent"
+// and "Software Engineer" would otherwise pass on the employer's "Software
+// Engineer"). Compared as titleKey.
+var genericTitles = map[string]bool{}
+
+func init() {
+	for _, t := range []string{
+		"software engineer", "senior software engineer", "staff software engineer", "principal software engineer",
+		"backend engineer", "frontend engineer", "full stack engineer", "fullstack engineer", "data engineer", "devops engineer",
+		"site reliability engineer", "engineering manager", "product manager", "senior product manager", "product designer",
+		"designer", "data scientist", "data analyst", "account executive", "sales development representative",
+		"customer success manager", "customer support", "support engineer", "recruiter", "office manager",
+		"marketing manager", "content writer", "technical writer", "security engineer", "qa engineer",
+	} {
+		genericTitles[titleKey(t)] = true
+	}
+}
+
+// titleKey is companymatch.TitleKey after dropping the parts of a title that
+// drift between a job board and an ATS: bracketed notes ("(Remote)"), and a
+// trailing "remote" or "worldwide" suffix.
+func titleKey(t string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range t {
+		switch r {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	k := companymatch.TitleKey(b.String())
+	for _, suf := range []string{" remote", " worldwide", " global"} {
+		k = strings.TrimSuffix(k, suf)
+	}
+	return k
+}
+
+// sharesTitle reports whether the board's job titles corroborate the entry's
+// employer titles: at least one shared title that is not a generic one, or at
+// least two shared titles.
 func sharesTitle(e Entry, boardTitles []string) bool {
 	want := make(map[string]bool, len(e.Titles))
 	for _, t := range e.Titles {
-		if k := companymatch.TitleKey(t); k != "" {
+		if k := titleKey(t); k != "" {
 			want[k] = true
 		}
 	}
+	shared, specific := map[string]bool{}, false
 	for _, t := range boardTitles {
-		if want[companymatch.TitleKey(t)] {
-			return true
+		k := titleKey(t)
+		if !want[k] { // want has no empty key
+			continue
+		}
+		shared[k] = true
+		if !genericTitles[k] {
+			specific = true
 		}
 	}
-	return false
+	return specific || len(shared) >= 2
 }
+
+// greenhouseDomainJobs is how many of a Greenhouse board's jobs are read for
+// the company's domain (one request each).
+const greenhouseDomainJobs = 3
 
 // sample is what a probe read of a Lever or Ashby board.
 type sample struct {
@@ -665,7 +749,7 @@ func (g *Guesser) probeGreenhouse(ctx context.Context, e Entry, slug string) (ve
 	}
 	nameOK := namesMatch(e.Name, b.Name)
 	if !nameOK && e.Domain == "" {
-		return boardNamedOther, nil // a board exists under this slug, named for some other company
+		return notTheCompanys(e.Name, b.Name), nil // a board exists under this slug, named otherwise
 	}
 
 	listBody, err := g.get(ctx, fmt.Sprintf("%s/%s/jobs", g.bases.greenhouse, url.PathEscape(slug)))
@@ -685,17 +769,26 @@ func (g *Guesser) probeGreenhouse(ctx context.Context, e Entry, slug string) (ve
 		if nameOK {
 			return boardEmpty, nil
 		}
-		return boardNamedOther, nil
+		return notTheCompanys(e.Name, b.Name), nil
 	}
-	// A domain was given: the board's first job saying it is proof, whatever the
-	// board calls itself (Greenhouse carries a job's text only in the job's own
-	// record).
-	if e.Domain != "" && list.Jobs[0].ID != 0 {
-		oneBody, err := g.get(ctx, fmt.Sprintf("%s/%s/jobs/%d", g.bases.greenhouse, url.PathEscape(slug), list.Jobs[0].ID))
-		if err != nil {
-			return boardNone, err
-		}
-		if oneBody != nil {
+	// A domain was given: one of the board's first jobs saying it is proof,
+	// whatever the board calls itself (Greenhouse carries a job's text only in
+	// the job's own record, so each is a request; the first hit ends the reading).
+	if e.Domain != "" {
+		for i, j := range list.Jobs {
+			if i >= greenhouseDomainJobs {
+				break
+			}
+			if j.ID == 0 {
+				continue
+			}
+			oneBody, err := g.get(ctx, fmt.Sprintf("%s/%s/jobs/%d", g.bases.greenhouse, url.PathEscape(slug), j.ID))
+			if err != nil {
+				return boardNone, err
+			}
+			if oneBody == nil {
+				continue
+			}
 			var one struct {
 				Content string `json:"content"`
 			}
@@ -710,7 +803,7 @@ func (g *Guesser) probeGreenhouse(ctx context.Context, e Entry, slug string) (ve
 	// No domain proof: the exact board name is enough unless the name is an
 	// everyday word.
 	if !nameOK {
-		return boardNamedOther, nil
+		return notTheCompanys(e.Name, b.Name), nil
 	}
 	if isCommonName(e.Name) {
 		return boardForeign, nil

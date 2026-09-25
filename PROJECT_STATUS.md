@@ -826,8 +826,8 @@ names itself as another company's. The first live run registered 6 boards of oth
 so the identity rules were rebuilt around positive proof (domain, exact Greenhouse name, whole-word
 name in half the sampled jobs, everyday-word names refused without a domain, ambiguity refused) and
 measured on 15 real boards (100% precision); an employer a job board showed must also list one of
-its job titles. Live: 210 companies with an active board, and a worldwide list of 15,954 open jobs
-from 818 companies (5,262 classified remote). Details,
+its job titles. Live: 213 companies with an active board, and a worldwide list of 15,960 open jobs
+from 819 companies (5,263 classified remote). Details,
 limits and the measured numbers: [docs/company-boards.md](docs/company-boards.md).
 
 ## 3. Work In Progress

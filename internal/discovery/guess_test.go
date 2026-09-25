@@ -915,6 +915,74 @@ func TestGuess_RefusalKindsSeparatePositiveEvidenceFromWeakDoubt(t *testing.T) {
 	}
 }
 
+// A Greenhouse board title that is not ours is "named for another company" only
+// when it shares no word with our name. A suffix, a retitled board or a domain
+// missing from the first job are unproven, never grounds to deactivate.
+func TestGuess_ARetitledOrSuffixedGreenhouseBoardIsUnprovenNotNamedForAnother(t *testing.T) {
+	g, _ := newFakeATS(t, map[string]string{
+		"gh/backblaze":       `{"name":"Backblaze External Website"}`,
+		"gh/backblaze/jobs":  `{"jobs":[{"id":1,"title":"A"}]}`,
+		"gh/acme":            `{"name":"Acme Careers"}`,
+		"gh/acme/jobs":       `{"jobs":[{"id":1,"title":"A"}]}`,
+		"gh/pantheon":        `{"name":"Pantheon Systems, Inc"}`,
+		"gh/pantheon/jobs":   `{"jobs":[{"id":1,"title":"A"},{"id":2,"title":"B"},{"id":3,"title":"C"},{"id":4,"title":"D"}]}`,
+		"gh/pantheon/jobs/1": `{"content":"no domain here"}`,
+		"gh/pantheon/jobs/2": `{"content":"still none"}`,
+		"gh/pantheon/jobs/3": `{"content":"nor here"}`,
+		"gh/pantheon/jobs/4": `{"content":"pantheon.io is only in the fourth job"}`,
+		"gh/fresh":           `{"name":"Fresh Systems"}`,
+		"gh/fresh/jobs":      `{"jobs":[{"id":1,"title":"A"},{"id":2,"title":"B"}]}`,
+		"gh/fresh/jobs/1":    `{"content":"nothing"}`,
+		"gh/fresh/jobs/2":    `{"content":"Fresh is at fresh.example"}`,
+	})
+	got, report := g.Guess(context.Background(), []Entry{
+		{Name: "Backblaze"}, {Name: "Acme"},
+		{Name: "Pantheon", Domain: "pantheon.io"}, // the domain is past the jobs read: unproven, not "another company's"
+		{Name: "Fresh", Domain: "fresh.example"},  // the domain is in the second job: proven
+	})
+	kinds := map[string]RefusalKind{}
+	for _, r := range report.Refused {
+		kinds[r.Name] = r.Kind
+	}
+	for _, name := range []string{"Backblaze", "Acme", "Pantheon"} {
+		if k, ok := kinds[name]; !ok || k != Unproven {
+			t.Errorf("%s: refusal %v (present %t), want Unproven", name, k, ok)
+		}
+	}
+	if len(got) != 1 || got[0].CompanyName != "Fresh" {
+		t.Errorf("registered %v, want only Fresh (its domain is in the second job)", boards(got))
+	}
+}
+
+// Sharing only a generic title proves nothing; a specific one, or two, does.
+func TestSharesTitle_GenericTitlesAloneDoNotCorroborate(t *testing.T) {
+	e := Entry{Name: "Ramp", Titles: []string{"Software Engineer", "Growth Lead", "Product Designer"}}
+	for _, tc := range []struct {
+		board []string
+		want  bool
+		why   string
+	}{
+		{[]string{"Ramp Agent", "Software Engineer"}, false, "one generic title"},
+		{[]string{"Software Engineer", "Product Designer"}, true, "two shared titles"},
+		{[]string{"Ramp Agent", "Growth Lead"}, true, "one specific title"},
+		{[]string{"Growth Lead (EMEA)", "x"}, true, "bracketed drift"},
+		{[]string{"Software Engineer", "Software Engineer"}, false, "the same generic title twice is still one"},
+		{[]string{"growth   lead - Remote"}, true, "a dash before the suffix collapses to a space"},
+		{[]string{"Growth Lead Remote Sales"}, false, "remote inside a title is not a suffix"},
+		{[]string{"Growth Lead Remote"}, true, "trailing remote"},
+		{[]string{"!!!", ""}, false, "titles with no letters have no key and match nothing"},
+		{nil, false, "no titles"},
+	} {
+		if got := sharesTitle(e, tc.board); got != tc.want {
+			t.Errorf("sharesTitle(%v) = %t, want %t (%s)", tc.board, got, tc.want, tc.why)
+		}
+	}
+	// An employer title that has no key never matches a board title that has none.
+	if sharesTitle(Entry{Name: "X", Titles: []string{"???"}}, []string{"!!!"}) {
+		t.Errorf("empty keys matched each other")
+	}
+}
+
 // A failure carries its parts: a company name with ": " in it is still the
 // company's name.
 func TestGuess_FailuresAreStructured(t *testing.T) {

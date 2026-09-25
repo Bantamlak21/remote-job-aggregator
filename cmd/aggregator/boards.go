@@ -112,11 +112,17 @@ func employerEntries(ctx context.Context, companies *company.Store, names []stri
 	if err != nil {
 		return nil, err
 	}
+	return attachTitles(names, titles), nil
+}
+
+// attachTitles makes the entries; titles is keyed by lower-cased, trimmed name
+// (company.Store.JobTitlesByCompany's key).
+func attachTitles(names []string, titles map[string][]string) []discovery.Entry {
 	out := make([]discovery.Entry, 0, len(names))
 	for _, n := range names {
 		out = append(out, discovery.Entry{Name: n, Titles: titles[strings.ToLower(strings.TrimSpace(n))]})
 	}
-	return out, nil
+	return out
 }
 
 // runDiscoverBoards finds the Greenhouse, Lever and Ashby job boards of the

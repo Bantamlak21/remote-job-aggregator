@@ -170,7 +170,7 @@ Substack
 Medium | medium.com
 Beehiiv
 ConvertKit
-Kit
+Kit | kit.com
 Lemon Squeezy
 Paddle
 FastSpring
@@ -216,7 +216,7 @@ Braintrust
 Gun.io
 Arc
 Torre
-Terminal
+Terminal | withterminal.com
 Bitovi
 Thoughtbot
 Ministry of Programming
@@ -407,7 +407,7 @@ Unkey
 Upstash
 Vanta
 Vimeo
-Warp
+Warp | warp.dev
 Wasmer
 Whimsical
 Xata
