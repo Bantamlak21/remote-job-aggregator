@@ -128,7 +128,7 @@ containing `: ` reads back correctly.
   company a job board showed under that name); it was deactivated by hand. Four real boards (Coalfire,
   Elsevier, JumpCloud, Toptal) share no title with the few listings a job board has and are left active.
 - Ingesting the ATSs took about a minute for 111 Greenhouse targets. The worldwide list then held
-  15,960 open jobs from 819 companies: 5,263 classified remote, 4,018 posted in the last 15 days.
+  15,960 open jobs from 819 companies (5,263 classified remote, 4,018 posted in the last 15 days); a later full ingest reopened more boards' jobs, and the worldwide list now holds 20,310.
 
 ## Limits
 

@@ -1,6 +1,6 @@
 # Project Status
 
-_Last updated: 2026-09-24._
+_Last updated: 2026-09-25._
 
 ## 1. Project Overview
 
@@ -828,9 +828,32 @@ names itself as another company's. The first live run registered 6 boards of oth
 so the identity rules were rebuilt around positive proof (domain, exact Greenhouse name, whole-word
 name in half the sampled jobs, everyday-word names refused without a domain, ambiguity refused) and
 measured on 15 real boards (100% precision); an employer a job board showed must also list one of
-its job titles. Live: 213 companies with an active board, and a worldwide list of 15,960 open jobs
-from 819 companies (5,263 classified remote). Details,
+its job titles. Live: 213 companies with an active board, and a worldwide list of 20,310 open jobs
+(15,960 before a later full ingest reopened boards' jobs). Details,
 limits and the measured numbers: [docs/company-boards.md](docs/company-boards.md).
+
+### Phase 4: Geographic eligibility and role relevance (branch `Bantamlak21/phase4-eligibility-e451cddd`)
+
+Every open job now has a stored verdict on whether a candidate living in Ethiopia could take it
+without relocating (`eligible` / `ineligible` / `uncertain`, with a confidence, a basis, reasons and
+the quoted text it rests on) and a role family with a relevance flag. Deterministic rules and
+tables, no model. Full description, rules, numbers and limits: [docs/eligibility.md](docs/eligibility.md).
+
+- `internal/filtering` (classifier), `internal/filtering/geo` (countries and regions from
+  `golang.org/x/text`, aliases, states, cities, time zones), `internal/filtering/relevance`
+  (JSON role profile, embedded default, `RELEVANCE_PROFILE` to replace it),
+  `internal/eligibility` (store and service: keyset batches, stale detection by rules version,
+  target country and job content hash, panic containment), migration `000006_job_eligibility`,
+  API fields and `?eligibility=` / `?relevant=` / `?role_family=`, `aggregator classify [--reclassify]`,
+  and `ingest` classifies what it stored.
+- Measured on real jobs, against labels from an independent labeler who never saw the code:
+  dev (325) accuracy 0.942, eligible precision 1.000 and recall 1.000; audit of 400 unseen jobs: 0
+  gold-ineligible called eligible, eligible precision 0.973. The held-out score (223 jobs, labels
+  sealed from the builder) is in the reviewer's report. Of 20,310 open worldwide jobs, 483 (2.4%)
+  are open to Ethiopia, 5,685 unclear, 14,142 not.
+- The frozen rubric asked for an "eligible only" default and a public "wrong label?" button. Neither
+  is built: the owner wants every worldwide job visible by default (the UI filter defaults to "Any
+  location"), and a feedback button needs an authenticated or rate-limited write endpoint first.
 
 ## 3. Work In Progress
 
@@ -872,19 +895,8 @@ itself).
 Ordered by dependency, per the original project requirements. Phase 2 (and the search-based
 discovery extension to it, this session) is complete — see Section 2 — and removed from this
 list. Phase 3 (ATS integration & ingestion, Greenhouse first) is also complete — see
-Section 2 — and removed from this list.
-
-### Phase 4 — Geographic eligibility & relevance filtering
-- **Objective:** deterministic classification of remote-eligibility and role relevance.
-- **Tasks:** `filtering` package — geographic classifier (ELIGIBLE/INELIGIBLE/UNCERTAIN
-  with confidence, reasons, evidence, detected locations, restrictions) and relevance
-  filtering (configurable positive/negative signals, not hard-coded to one job title). New
-  migration adding `job_eligibility` (deferred from Phase 1 deliberately — see Section 5).
-- **Expected files/modules:** `internal/filtering/`, `migrations/00000X_job_eligibility.*.sql`.
-- **Dependencies:** Phase 3 (done: 575 real ingested jobs to classify, `location_raw` populated).
-- **Verification:** unit tests are the primary tool (deterministic logic), plus an eval
-  suite per CLAUDE.md's rule that classification quality needs more than deterministic
-  tests alone.
+Section 2 — and removed from this list. Phase 4 (geographic eligibility and relevance) is also
+built — see Section 2 — and removed from this list.
 
 ### Phase 5 — Ranking & upsert/change detection
 - **Objective:** deterministic, explainable scoring, wired into the (already built)
@@ -961,16 +973,19 @@ query pattern), `jobs(last_seen_at)`.
 firing only when a column other than `updated_at` itself actually changed.
 
 **Missing schema components (intentional, not oversights):**
-- `job_eligibility` — geographic/relevance classification data. Belongs to Phase 4.
 - No indexes/tables for ranking, scheduling state, or notification dedup — belong to
   Phases 5–6.
 
-**Database-related pending work:** none requiring a migration. This session changed
+**`job_eligibility` (migration `000006`, Phase 4):** one row per job with the eligibility status,
+confidence, basis, reasons, evidence, detected locations, restrictions, hours constraint, role
+family, relevance flag, and the classifier version, target country and job content hash it was made
+from (a row that no longer matches them is stale and recomputed). See docs/eligibility.md.
+
+**Database-related pending work:** none requiring a migration. An earlier session changed
 `target_companies` upsert *behavior* (not schema): `TargetStore.Upsert`'s
 `ON CONFLICT DO UPDATE` now carries a `WHERE target_companies.company_id =
 EXCLUDED.company_id` guard, refusing to reassign a board already owned by a different
-company (see Section 2's "Search-based discovery" subsection). The next schema change is
-still the Phase 4 `job_eligibility` migration.
+company (see Section 2's "Search-based discovery" subsection).
 
 ## 6. Current Architecture
 
@@ -1185,36 +1200,25 @@ because none of that code exists yet.
   concurrent-convergence test passes today; re-check it on a Postgres major upgrade.
 - **Only Greenhouse is ingested.** Lever and Ashby targets found by `search-discover` are
   reported `no ATS client registered` every run until Phase 7 (documented in the README).
-- **Real jobs are unclassified.** Every ingested job is `remote_type`/`employment_type =
-  unknown` with no tags and no logo, so the job board's type/tag filters match nothing useful
-  until Phase 4. The API and frontend handle `unknown` honestly (no badge, no guessing).
+- **`remote_type`, `employment_type` and tags are only as good as the source.** Greenhouse,
+  Lever and Ashby now say remote/hybrid/on-site; job boards say remote; jobs still have no tags and
+  no logo. Eligibility and role are classified (Phase 4).
 - **`internal/ingestion`'s worker pool uses `wg.Add(1)`/`go func` rather than `WaitGroup.Go`**
   (a gopls modernization hint), deliberately matching `internal/discovery.Run` line for line;
   modernize both together if ever.
 
 ## 9. Exact Next Step
 
-**Before Phase 4:** run `aggregator migrate-up`, `seed-priority`, and (with `SERPER_API_KEY`)
-`ingest --providers=search` on the target database, and restart `aggregator serve`; schedule
-`ingest` daily and the search source weekly (see docs/priority-companies.md). Then:
+**Before Phase 5:** run `aggregator migrate-up` (000004 to 000006), `aggregator discover-boards`,
+`aggregator ingest` (which now also classifies what it stored) and `aggregator classify` once for
+the jobs already stored, then restart `aggregator serve` and rebuild the frontend. Schedule
+`ingest` daily and the search source weekly (docs/priority-companies.md).
 
-**Start Phase 4: geographic eligibility & relevance filtering** (`internal/filtering`, plus a
-`job_eligibility` migration). Phase 3 deliberately ingests every job as `remote_type =
-unknown` / `employment_type = unknown` with empty `tags`, because Greenhouse's public API
-has none of those fields; classifying them from the raw `location_raw` string, the title, and
-the description is exactly Phase 4's job, and it is where this project's core value
-(correct Ethiopia-eligibility) actually lives. Until it lands, the job board lists real jobs
-but cannot filter by remote type, employment type, or tag (those filters match nothing or
-everything, honestly, rather than guessing).
-
-Prerequisites already in place: 575 real jobs in the dev database from four Greenhouse
-boards, `jobs.location_raw` populated, `jobs.remote_type`/`employment_type` constrained to
-values including `unknown`, and an API/frontend that already render an `unknown`
-classification gracefully (no badge). Design it deterministically (rules and lookup tables,
-per the project's LLM-usage rule) with an eval suite for classification quality, using the
-real ingested `location_raw` values as the fixture corpus — many are things like
-"Remote, Canada; Remote, United States" or "San Francisco, CA • New York, NY" that a naive
-"contains 'remote'" rule would misclassify.
+**Start Phase 5: ranking.** Phase 4 stores what ranking needs: each job's eligibility status,
+confidence and basis, and role family and relevance flag (`job_eligibility`). The list is
+still sorted by recency only; a ranking that puts jobs that are eligible, relevant and fresh first,
+explainably (why is this job here), is the next deterministic step, scored by an eval like Phase 4's.
+Keep the eval rule: quality that unit tests cannot capture gets a labeled set and a held-out score.
 
 Smaller, independent items:
 - **Phase 7 (Lever/Ashby) is now blocking real coverage**: `search-discover` found 6 boards,
@@ -1222,9 +1226,9 @@ Smaller, independent items:
   reported as `no ATS client registered` every run. The `ats`/`ingestion` abstraction was
   built for this (a new provider is a new client in the `clients` map in `runIngest`), so
   pulling Phase 7's provider work forward is cheap if Bantamlak wants those companies' jobs.
-- The frontend (`remote-job-aggregator-web`) should be revisited after Phase 4 (its filters
-  and tag dropdown are only meaningful once jobs are classified), per the standing request to
-  update it each phase.
+- The frontend (`remote-job-aggregator-web`) has the Location ("Open to Ethiopia") and Role
+  filters, the card badge and the detail panel for Phase 4; the tag dropdown is still empty
+  because jobs have no tags.
 
 ## 10. Development Continuation Instructions
 

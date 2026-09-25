@@ -55,6 +55,28 @@ company, whose jobs are always `"ethiopia"`, so they are never in the worldwide 
 `market=worldwide` narrows a list to one; omitting it returns both. Additive change: the field
 is new and the parameter is optional.
 
+**Eligibility and role.** Every job reports two objects that are `null` until the job has been
+classified (`aggregator classify`, or `ingest`, which classifies what it stored):
+
+- `eligibility`: whether a candidate living in Ethiopia could take the job without relocating.
+  `status` is `eligible`, `ineligible` or `uncertain` (never a boolean: "the text does not say" is
+  its own answer), `confidence` is 0..1, `basis` says what the verdict rests on, `restrictions`
+  lists the limits found (`["United States only"]`, `[]` when none) and `hours_constraint` is a
+  string when an eligible job asks for working hours far from Ethiopia's (US hours), else `null`.
+  Bases: eligible: `local_ethiopia`, `worldwide`, `region_includes_africa` (EMEA, Africa),
+  `timezone_window`, `exclusion_list_ok` (anywhere except some places), `explicit_permission`;
+  ineligible: `restricted_places`, `excluded`, `timezone_outside`, `onsite_elsewhere`,
+  `work_authorization`; uncertain: `conflicting_signals`, `no_signal`.
+- `role`: `family` (`software_engineering`, `data_ml`, `devops_security`, `product_design`,
+  `it_support`, `other_tech`, `non_tech`, from the title) and `relevant`, whether the role profile
+  counts the family as relevant (the built-in profile: software, data, DevOps and security; replace
+  it with `RELEVANCE_PROFILE`, see `docs/eligibility.md`).
+
+The single-job response's `eligibility` adds `reasons` (one sentence each), `evidence` (the text the
+verdict rests on, `{field, text}`), `locations` (places found) and `classifier_version`. How the
+verdicts are made, and how good they are: [eligibility.md](eligibility.md). Additive: existing
+consumers that ignore the new fields see the same shapes as before.
+
 Base URL (dev): `http://localhost:8080/api/v1`
 
 ## GET /api/v1/jobs
@@ -72,6 +94,9 @@ Query params (all optional):
 | `tag` | string | Job must have this tag |
 | `market` | string | `ethiopia` or `worldwide` returns only that list; omitted returns both. Anything else is a `400` |
 | `priority` | string | `true` returns only jobs from priority (Ethiopian) companies. `false` is the same as omitting the parameter (it does **not** mean "only non-priority"), so a UI toggle can send its state verbatim. The web UI does not use this parameter (it splits by `market`); it stays for API clients. Anything else is a `400` |
+| `eligibility` | string | Comma-separated statuses to keep: `eligible`, `ineligible`, `uncertain`, `unclassified` (jobs with no verdict yet). `eligibility=eligible,uncertain` keeps jobs that are open or unclear. Anything else is a `400` |
+| `relevant` | string | `true` keeps roles the role profile counts as relevant. `false` is the same as omitting it. Anything else is a `400` |
+| `role_family` | string | One family (`software_engineering`, ...). Lower-case letters and underscores, at most 40; anything else is a `400` |
 | `page` | int | Default `1` |
 | `page_size` | int | Default `20`, max `100` |
 
@@ -93,7 +118,9 @@ Response `200`:
       "region_note": "Worldwide",
       "tags": ["go", "backend", "payments"],
       "posted_at": "2026-09-10T00:00:00Z",
-      "application_url": "https://jobs.lever.co/spotify"
+      "application_url": "https://jobs.lever.co/spotify",
+      "eligibility": { "status": "eligible", "confidence": 0.9, "basis": "worldwide", "restrictions": [], "hours_constraint": null },
+      "role": { "family": "software_engineering", "relevant": true }
     }
   ],
   "page": 1,
@@ -102,7 +129,7 @@ Response `200`:
 }
 ```
 
-Invalid `remote_type`/`employment_type`/`priority`/`market` values, or `page`/`page_size` out of range, are a
+Invalid `remote_type`/`employment_type`/`priority`/`market`/`eligibility`/`relevant`/`role_family` values, or `page`/`page_size` out of range, are a
 `400` (see Error shape), not silently ignored.
 
 ## GET /api/v1/jobs/{id}
@@ -126,6 +153,18 @@ Response `200`:
   "tags": ["go", "backend", "payments"],
   "posted_at": "2026-09-10T00:00:00Z",
   "application_url": "https://jobs.lever.co/spotify",
+  "eligibility": {
+    "status": "eligible",
+    "confidence": 0.9,
+    "basis": "worldwide",
+    "restrictions": [],
+    "hours_constraint": null,
+    "reasons": ["the location open worldwide"],
+    "evidence": [{ "field": "location", "text": "Worldwide" }],
+    "locations": [],
+    "classifier_version": 1
+  },
+  "role": { "family": "software_engineering", "relevant": true },
   "description": "Own the payments processing pipeline that powers Spotify Premium billing across 180+ markets..."
 }
 ```

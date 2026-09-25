@@ -50,6 +50,10 @@ aggregator discover [seed-file]       # validate candidate ATS boards from a see
 aggregator search-discover [names-file]  # find each company's ATS board via the Serper
                                        # search API (default configs/company_names.txt),
                                        # then the same validate-and-persist as discover
+aggregator classify [--reclassify]   # decide, for every open job, whether someone in Ethiopia
+                                       # could take it (eligible / ineligible / uncertain, with the
+                                       # reason and the quoted text) and what kind of role it is;
+                                       # `ingest` runs it on what it stored. docs/eligibility.md
 aggregator ingest [--providers=a,b]   # fetch jobs from the active targets (Greenhouse
                                        # boards, RSS feeds, careers pages), upsert them, and
                                        # close out jobs that disappeared, and collect the newest
