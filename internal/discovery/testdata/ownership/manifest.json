@@ -1,0 +1,107 @@
+[
+ {
+  "provider": "ashby",
+  "slug": "zapier",
+  "name": "Zapier",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "linear",
+  "name": "Linear",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "ramp",
+  "name": "Ramp",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "supabase",
+  "name": "Supabase",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "sentry",
+  "name": "Sentry",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "replit",
+  "name": "Replit",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "notion",
+  "name": "Notion",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "close",
+  "name": "Close",
+  "owner": true,
+  "jobs": 7
+ },
+ {
+  "provider": "ashby",
+  "slug": "docker",
+  "name": "Docker",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "lever",
+  "slug": "toptal",
+  "name": "Toptal",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "lever",
+  "slug": "metabase",
+  "name": "Metabase",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "lever",
+  "slug": "sonatype",
+  "name": "Sonatype",
+  "owner": true,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "warp",
+  "name": "Warp",
+  "owner": false,
+  "jobs": 8
+ },
+ {
+  "provider": "lever",
+  "slug": "neon",
+  "name": "Neon",
+  "owner": false,
+  "jobs": 8
+ },
+ {
+  "provider": "ashby",
+  "slug": "neon",
+  "name": "Neon",
+  "owner": false,
+  "jobs": 4
+ }
+]

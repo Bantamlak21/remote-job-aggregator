@@ -115,10 +115,7 @@ func (c *Client) ListJobs(ctx context.Context, boardToken string) ([]ats.Job, er
 }
 
 func convert(p posting, board string) ats.Job {
-	id := ""
-	if strings.TrimSpace(p.ID) != "" {
-		id = strings.TrimSpace(p.ID)
-	}
+	id := strings.TrimSpace(p.ID)
 	location := ats.CleanText(p.Categories.Location)
 	if len(p.Categories.AllLocations) > 1 {
 		location = ats.CleanText(strings.Join(p.Categories.AllLocations, "; "))

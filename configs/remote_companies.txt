@@ -4,9 +4,16 @@
 # registers the boards that prove they are the company's. A name with no public
 # board there is simply not found; adding a name costs a handful of requests.
 # One name per line; blank lines and lines starting with # are ignored.
+#
+# "Name | domain.tld" adds the company's web domain: the board is then accepted
+# only if its job text mentions that domain, which is the only proof that works
+# for a name that is also an everyday word (Close, Linear, Ramp). A name made of
+# everyday words with no domain is not looked up at all, and a name that shows
+# up on more than one board is refused as ambiguous; both are logged so the
+# domain can be added. The domains below were each checked against a live board.
 GitLab
 Automattic
-Zapier
+Zapier | zapier.com
 Doist
 Buffer
 Toptal
@@ -24,12 +31,12 @@ Cloudflare
 HashiCorp
 Grafana Labs
 PostHog
-Supabase
-Sentry
+Supabase | supabase.com
+Sentry | sentry.io
 Ghost
 Basecamp
 Articulate
-Close
+Close | close.com
 DuckDuckGo
 Ahrefs
 Wikimedia Foundation
@@ -46,9 +53,9 @@ Datadog
 Twilio
 Stripe
 Figma
-Notion
-Linear
-Ramp
+Notion | notion.so
+Linear | linear.app
+Ramp | ramp.com
 Mercury
 Retool
 Airtable
@@ -101,11 +108,11 @@ OpenAI
 Anthropic
 Cohere
 Mistral AI
-Replit
+Replit | replit.com
 Glitch
 Fly.io
-Render
-Railway
+Render | render.com
+Railway | railway.com
 DigitalOcean
 Linode
 Vultr
@@ -125,7 +132,7 @@ Mux
 Cloudinary
 Imgix
 Contentful
-Sanity
+Sanity | sanity.io
 Storyblok
 Strapi
 Algolia
@@ -160,7 +167,7 @@ Thinkific
 Kajabi
 Patreon
 Substack
-Medium
+Medium | medium.com
 Beehiiv
 ConvertKit
 Kit
@@ -239,7 +246,7 @@ Surfshark
 ExpressVPN
 WP Engine
 Kinsta
-Pantheon
+Pantheon | pantheon.io
 Acquia
 Drupal
 Yoast
@@ -281,7 +288,7 @@ Dremio
 Preset
 Metabase
 Lightdash
-Hex
+Hex | hex.tech
 Observable
 Deepnote
 Mode
@@ -316,7 +323,7 @@ Attio
 Axiom
 Bitrise
 BrowserStack
-Bubble
+Bubble | bubble.io
 Calm
 CARTO
 Chainguard
@@ -361,7 +368,7 @@ LiveKit
 Loops
 Mailgun
 Mapbox
-Modal
+Modal | modal.com
 Modern Treasury
 Mysten Labs
 n8n
@@ -380,9 +387,9 @@ Polar
 Qovery
 Quickbase
 Raycast
-Readme
+Readme | readme.com
 Redpanda
-Resend
+Resend | resend.com
 Rive
 Scaleway
 Semaphore

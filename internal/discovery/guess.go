@@ -3,15 +3,17 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
@@ -21,22 +23,66 @@ import (
 // A company name is enough to find its job board on the three big public
 // ATSs: their boards are addressed by a slug that is nearly always the
 // company's name, and each answers 404 for a board that does not exist. The
-// danger is a different company using the slug ("close", "signal", "front"),
-// so a board is accepted only when it proves it belongs to the company:
+// danger is a different company using the slug ("wise", "ghost", "neon"), and
+// on the first live run 6 of 178 registered boards were exactly that. So a
+// board is registered only on positive proof, and ambiguity is refused rather
+// than guessed:
 //
-//   - Greenhouse names its board: the name must match the company's.
-//   - Lever and Ashby do not, so the company's name must appear in the text of
-//     at least half of the board's first jobs.
+//   - A domain given in the names file ("Ramp | ramp.com") that appears in the
+//     board's job text is proof: the strongest signal, and the only one that
+//     works for a name that is also an everyday word.
+//   - Otherwise Greenhouse must name the board exactly as the company is
+//     named, and Lever and Ashby must show the company's name, as a whole word
+//     in the case it is written, in at least half of the first eight listed
+//     jobs, on a board of at least two jobs.
+//   - A name that is an everyday word ("Close", "Wise", "Neon") is never
+//     accepted on name alone: it needs a domain proof.
+//   - A name that verifies on more than one board is refused as ambiguous,
+//     unless every one of those boards is domain-proven.
 //
-// Everything else is left alone: a board whose owner cannot be confirmed is
-// reported and not registered.
+// Everything refused is reported so a person can decide.
 
 const (
-	// identitySample is how many of a board's jobs are read to confirm who owns
-	// it (Lever and Ashby).
+	// identitySample is how many of a board's listed jobs are read to confirm
+	// who owns it (Lever and Ashby).
 	identitySample  = 8
 	maxSlugVariants = 4
+	// maxProbeErrors is how many failed probes (a rate limit, a network or
+	// server error) one run tolerates before it stops: past that it is being
+	// blocked, and every further probe would look like "not found".
+	maxProbeErrors = 25
+	// maxBoardBytes bounds what one probe may read from one board. Ashby has
+	// no way to ask for fewer jobs and its largest boards are a few MB; the
+	// probe decodes as a stream and stops after identitySample jobs, so this is
+	// only a backstop.
+	maxBoardBytes = 32 << 20
 )
+
+// Entry is one company to look up: its name and, optionally, its web domain.
+type Entry struct {
+	Name   string
+	Domain string // "ramp.com"; "" when not known
+}
+
+// ParseEntry reads a names-file line: "Name" or "Name | domain.tld". The
+// domain is lower-cased and stripped of a scheme, "www." and any path; a
+// domain that is not one (no dot, or spaces) is ignored.
+func ParseEntry(line string) Entry {
+	name, domain, _ := strings.Cut(line, "|")
+	e := Entry{Name: strings.Join(strings.Fields(name), " ")}
+	d := strings.ToLower(strings.TrimSpace(domain))
+	if i := strings.Index(d, "://"); i >= 0 {
+		d = d[i+3:]
+	}
+	d = strings.TrimPrefix(d, "www.")
+	if i := strings.IndexAny(d, "/?#"); i >= 0 {
+		d = d[:i]
+	}
+	if strings.Contains(d, ".") && !strings.ContainsAny(d, " \t") {
+		e.Domain = d
+	}
+	return e
+}
 
 // boardBases are the API roots the guesser probes; tests replace them.
 type boardBases struct {
@@ -49,13 +95,18 @@ var defaultBases = boardBases{
 	ashby:      "https://api.ashbyhq.com/posting-api/job-board",
 }
 
-// GuessReport counts what one Guess run found.
+// GuessReport says what one Guess run found and what it refused.
 type GuessReport struct {
 	Names       int
 	Found       int      // names with at least one verified board
 	Boards      int      // verified boards
-	NotFound    []string // names with no board on any of the three ATSs
+	NotFound    []string // names with no usable board on any of the three ATSs
 	Unconfirmed []string // "name provider/slug": a board exists but does not show it is the company's
+	Ambiguous   []string // names that verified on more than one board and were refused
+	NeedsDomain []string // everyday-word names with no domain given: not looked up
+	Failed      []string // "name provider/slug: error": a probe failed, so the name was not fully checked
+	Unreached   []string // names not reached because the run was canceled or aborted
+	Aborted     bool     // too many probes failed; the run stopped early
 }
 
 // Guesser finds boards from company names.
@@ -81,10 +132,26 @@ func NewGuesser(doer Doer, workers int, pause time.Duration, logger *slog.Logger
 	return &Guesser{http: doer, logger: logger, workers: workers, pause: pause, bases: defaultBases}
 }
 
-// slugVariants lists the board slugs worth trying for a company name: the
-// name run together ("grafanalabs"), dash-joined ("grafana-labs"), and both
-// again without a trailing corporate word ("Acme Inc" also tries "acme").
+func hasNonASCIILetter(s string) bool {
+	for _, r := range s {
+		if r > unicode.MaxASCII && unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// slugVariants lists the board slugs worth trying for a company name, most
+// likely first: the name run together with its dots dropped ("customerio"),
+// dash-joined ("customer-io"), then without a trailing corporate word
+// ("Acme Inc" also tries "acme"), and finally, for a name written with a web
+// address ending, without it ("Customer.io" also tries "customer"; such a
+// slug is only ever accepted with the domain proven). A name with non-ASCII
+// letters has no reliable slug and gets none.
 func slugVariants(name string) []string {
+	if hasNonASCIILetter(name) {
+		return nil
+	}
 	var out []string
 	add := func(s string) {
 		if s = strings.Trim(s, "-"); s == "" || len(out) >= maxSlugVariants {
@@ -97,108 +164,320 @@ func slugVariants(name string) []string {
 		}
 		out = append(out, s)
 	}
-	name = stripDomain(name)
 	dash := companymatch.Slug(strings.ReplaceAll(name, ".", ""))
 	add(strings.ReplaceAll(dash, "-", ""))
 	add(dash)
 	key := companymatch.Key(name)
 	add(strings.ReplaceAll(key, "-", ""))
 	add(key)
+	if stripped := stripDomain(name); stripped != strings.TrimSpace(name) {
+		s := companymatch.Slug(stripped)
+		add(strings.ReplaceAll(s, "-", ""))
+		add(s)
+	}
 	return out
 }
 
-var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
-
-// squash lower-cases and drops everything but letters and digits, for
-// "does this text mention the company" checks.
-func squash(s string) string { return nonAlnum.ReplaceAllString(strings.ToLower(s), "") }
-
-var domainSuffix = regexp.MustCompile(`(?i)\.(com|io|ai|dev|co|app|net|org|so|sh)\s*$`)
+var domainEndings = []string{".com", ".io", ".ai", ".dev", ".co", ".app", ".net", ".org", ".so", ".sh"}
 
 // stripDomain drops a trailing web-address ending ("Honeycomb.io" is
-// "Honeycomb"): companies write their name both ways.
+// "Honeycomb"): a board may be named either way.
 func stripDomain(name string) string {
-	return domainSuffix.ReplaceAllString(strings.TrimSpace(name), "")
+	n := strings.TrimSpace(name)
+	l := strings.ToLower(n)
+	for _, e := range domainEndings {
+		if strings.HasSuffix(l, e) && len(n) > len(e) {
+			return strings.TrimSpace(n[:len(n)-len(e)])
+		}
+	}
+	return n
 }
 
-// namesMatch reports whether two company names are the same company for
-// this purpose: equal after dropping corporate suffixes, or one is the other
-// followed by more words ("Grafana" and "Grafana Labs").
-func namesMatch(a, b string) bool {
-	ka, kb := companymatch.Key(stripDomain(a)), companymatch.Key(stripDomain(b))
-	if ka == "" || kb == "" {
+// lostDomain reports whether slug is only reachable by dropping a web-address
+// ending from the name ("customer" for "Customer.io"). Such a slug is never
+// accepted on the name alone.
+func lostDomain(name, slug string) bool {
+	stripped := stripDomain(name)
+	if stripped == strings.TrimSpace(name) {
 		return false
 	}
-	return ka == kb || strings.HasPrefix(ka+"-", kb+"-") || strings.HasPrefix(kb+"-", ka+"-")
+	s := companymatch.Slug(stripped)
+	full := companymatch.Slug(strings.ReplaceAll(name, ".", ""))
+	return (slug == s || slug == strings.ReplaceAll(s, "-", "")) && slug != full && slug != strings.ReplaceAll(full, "-", "")
 }
 
-// Guess probes every name against Greenhouse, Lever and Ashby and returns a
-// Candidate for each verified board with at least one job. Names are worked
-// through by a small pool of workers; cancellation stops it.
-func (g *Guesser) Guess(ctx context.Context, names []string) ([]Candidate, GuessReport) {
-	type outcome struct {
-		name        string
-		boards      []Candidate
-		unconfirmed []string
+// namesMatch reports whether a Greenhouse board's own name is the company's:
+// equal once corporate suffixes are dropped ("Acme Inc" is "Acme"). A web
+// address ending is dropped from the board's name only ("Honeycomb.io" is
+// "Honeycomb"), never from ours: "Customer.io" is not a board named
+// "Customer".
+func namesMatch(ours, board string) bool {
+	ko := companymatch.Key(ours)
+	if ko == "" {
+		return false
 	}
-	jobs := make(chan string)
-	outcomes := make(chan outcome)
+	if ko == companymatch.Key(board) {
+		return true
+	}
+	return stripDomain(ours) == strings.TrimSpace(ours) && ko == companymatch.Key(stripDomain(board))
+}
+
+// commonWords are everyday words that are also company names on the boards
+// this looks up. A name made only of them cannot be told from another
+// company's by name, so it is never accepted without a domain.
+var commonWords = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`
+		arc axiom boundary bubble calm census close coda cursor daily element expo front gem ghost glitch
+		guru harvest heap hex hired hopin jam kit knock loom loops matrix medium mercury modal neon
+		nomad orb oxide pitch polar pulse railway relay remote render resend rive sanity segment signal split terminal
+		temporal vault warp wise`) {
+		commonWords[w] = true
+	}
+}
+
+// isCommonName reports whether every word of the name is an everyday word.
+func isCommonName(name string) bool {
+	toks := tokens(stripDomain(name))
+	if len(toks) == 0 {
+		return false
+	}
+	for _, t := range toks {
+		if !commonWords[strings.ToLower(t)] {
+			return false
+		}
+	}
+	return true
+}
+
+// tokens splits text into words of letters and digits (any script).
+func tokens(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+var legalForms = map[string]bool{"inc": true, "llc": true, "ltd": true, "plc": true, "gmbh": true, "corp": true, "corporation": true, "co": true, "sa": true, "ag": true, "bv": true}
+
+// nameTokens is the company name as words with legal-form endings dropped.
+func nameTokens(name string) []string {
+	toks := tokens(name)
+	for len(toks) > 1 && legalForms[strings.ToLower(toks[len(toks)-1])] {
+		toks = toks[:len(toks)-1]
+	}
+	return toks
+}
+
+// mentions reports whether text contains the company name as a run of whole
+// words. A name written with a capital only at its start ("Ramp", "Kit") is
+// matched in that case, so a lower-case "ramp up" is not the company; a name
+// with capitals inside ("FullStory", "GitLab") or all in one case matches any
+// case, since such names are rarely everyday words and are written both ways.
+// "Ramp" is not in "Trampoline" or "Program Partner", and "Kit" is not in
+// "Kitchen".
+func mentions(text string, name []string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	fold := false
+	for _, t := range name {
+		rs := []rune(t)
+		for i, r := range rs {
+			if i > 0 && unicode.IsUpper(r) {
+				fold = true // a capital inside the word
+			}
+		}
+		if t == strings.ToLower(t) || t == strings.ToUpper(t) {
+			fold = true
+		}
+	}
+	words := tokens(text)
+	eq := func(a, b string) bool {
+		if fold {
+			return strings.EqualFold(a, b)
+		}
+		return a == b
+	}
+	for i := 0; i+len(name) <= len(words); i++ {
+		ok := true
+		for j := range name {
+			if !eq(words[i+j], name[j]) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDomain reports whether text contains the domain with word boundaries
+// ("ramp.com" is in "visit ramp.com/careers", not in "trampoline.company").
+func hasDomain(text, domain string) bool {
+	if domain == "" {
+		return false
+	}
+	t := strings.ToLower(text)
+	for from := 0; from < len(t); {
+		i := strings.Index(t[from:], domain)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(domain)
+		before := start == 0 || !isDomainChar(rune(t[start-1]))
+		after := end == len(t) || !isDomainChar(rune(t[end]))
+		if before && after {
+			return true
+		}
+		from = end
+	}
+	return false
+}
+
+func isDomainChar(r rune) bool {
+	return r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// domainProof reports whether any sampled text carries the entry's domain.
+func domainProof(e Entry, texts []string) bool {
+	for _, t := range texts {
+		if hasDomain(t, e.Domain) {
+			return true
+		}
+	}
+	return false
+}
+
+// nameProof decides, from the name alone, whether the sampled job texts of a
+// Lever or Ashby board show it is the company's. listed is how many jobs the
+// board has (at least the sample).
+func nameProof(e Entry, texts []string, listed int) bool {
+	if len(texts) == 0 || isCommonName(e.Name) || listed < 2 {
+		return false
+	}
+	name := nameTokens(e.Name)
+	hits := 0
+	for _, t := range texts {
+		if mentions(t, name) {
+			hits++
+		}
+	}
+	return hits >= (len(texts)+1)/2
+}
+
+// classify turns the sampled texts of a Lever or Ashby board into a verdict.
+// (A name that lost its web-address ending needs no special case here: its
+// name tokens still include the ending, so the text must say "Customer.io".)
+func classify(e Entry, texts []string, listed int) verdict {
+	switch {
+	case listed == 0:
+		return boardEmpty
+	case domainProof(e, texts):
+		return boardProven
+	case nameProof(e, texts, listed):
+		return boardOwned
+	}
+	return boardForeign
+}
+
+// outcome is what one entry's probes found.
+type outcome struct {
+	name        string
+	done        bool // false: not completed (canceled, aborted or never started)
+	boards      []Candidate
+	allProven   bool // every board in boards carries a domain proof
+	unconfirmed []string
+	failed      []string
+	needsDomain bool
+	domain      string
+}
+
+// Guess probes every entry against Greenhouse, Lever and Ashby and returns a
+// Candidate (Verified) for each verified board with at least one job. Entries
+// are worked through by a small pool of workers. Cancellation, or too many
+// failed probes, stops the run; the entries not completed are reported.
+func (g *Guesser) Guess(ctx context.Context, entries []Entry) ([]Candidate, GuessReport) {
+	var uniq []Entry
+	seen := map[string]bool{}
+	for _, e := range entries {
+		k := strings.ToLower(strings.TrimSpace(e.Name))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		uniq = append(uniq, e)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var probeErrors atomic.Int64
+	var aborted atomic.Bool
+	results := make([]outcome, len(uniq))
+
+	feed := make(chan int)
 	var wg sync.WaitGroup
 	for i := 0; i < g.workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for name := range jobs {
-				b, u := g.guessOne(ctx, name)
-				outcomes <- outcome{name, b, u}
+			for idx := range feed {
+				results[idx] = g.guessOne(ctx, uniq[idx], &probeErrors, &aborted, cancel)
 			}
 		}()
 	}
-	go func() {
-		defer close(jobs)
-		for _, n := range names {
-			select {
-			case jobs <- n:
-			case <-ctx.Done():
-				return
-			}
+loop:
+	for i := range uniq {
+		select {
+		case feed <- i:
+		case <-ctx.Done():
+			break loop
 		}
-	}()
-	go func() { wg.Wait(); close(outcomes) }()
-
-	report := GuessReport{Names: len(names)}
-	byName := map[string]outcome{}
-	for o := range outcomes {
-		byName[o.name] = o
 	}
-	// Report in the order the names were given, whatever order the workers
-	// finished in.
+	close(feed)
+	wg.Wait()
+
+	report := GuessReport{Names: len(uniq), Aborted: aborted.Load()}
 	var candidates []Candidate
-	for _, n := range names {
-		o, ok := byName[n]
-		if !ok {
-			continue // not reached (canceled)
-		}
-		report.Unconfirmed = append(report.Unconfirmed, o.unconfirmed...)
-		if len(o.boards) == 0 {
-			if len(o.unconfirmed) == 0 {
-				report.NotFound = append(report.NotFound, n)
-			}
+	for i, o := range results {
+		if !o.done {
+			report.Unreached = append(report.Unreached, uniq[i].Name)
 			continue
 		}
-		report.Found++
-		report.Boards += len(o.boards)
-		candidates = append(candidates, o.boards...)
+		report.Unconfirmed = append(report.Unconfirmed, o.unconfirmed...)
+		report.Failed = append(report.Failed, o.failed...)
+		switch {
+		case o.needsDomain:
+			report.NeedsDomain = append(report.NeedsDomain, o.name)
+		case len(o.boards) > 1 && !o.allProven:
+			// The same name verified on more than one board: two companies
+			// share it, or one has moved: not something to guess.
+			report.Ambiguous = append(report.Ambiguous, o.name)
+		case len(o.boards) == 0:
+			if len(o.unconfirmed) == 0 && len(o.failed) == 0 {
+				report.NotFound = append(report.NotFound, o.name)
+			}
+		default:
+			report.Found++
+			report.Boards += len(o.boards)
+			candidates = append(candidates, o.boards...)
+		}
 	}
 	return candidates, report
 }
 
-func (g *Guesser) guessOne(ctx context.Context, name string) (boards []Candidate, unconfirmed []string) {
+func (g *Guesser) guessOne(ctx context.Context, e Entry, probeErrors *atomic.Int64, aborted *atomic.Bool, cancel context.CancelFunc) outcome {
+	out := outcome{name: e.Name, domain: e.Domain, allProven: true}
+	// A name that is an everyday word is never looked up without a domain.
+	if e.Domain == "" && isCommonName(e.Name) {
+		out.needsDomain, out.done = true, true
+		return out
+	}
 	seen := map[string]bool{}
-	for _, slug := range slugVariants(name) {
+	for _, slug := range slugVariants(e.Name) {
 		for _, provider := range []string{string(ats.ProviderGreenhouse), string(ats.ProviderLever), string(ats.ProviderAshby)} {
 			if ctx.Err() != nil {
-				return boards, unconfirmed
+				return out // not done
 			}
 			key := provider + "/" + slug
 			if seen[key] {
@@ -206,23 +485,40 @@ func (g *Guesser) guessOne(ctx context.Context, name string) (boards []Candidate
 			}
 			seen[key] = true
 			var v verdict
+			var err error
 			switch provider {
 			case "greenhouse":
-				v = g.probeGreenhouse(ctx, name, slug)
+				v, err = g.probeGreenhouse(ctx, e, slug)
 			case "lever":
-				v = g.probeLever(ctx, name, slug)
+				v, err = g.probeLever(ctx, e, slug)
 			case "ashby":
-				v = g.probeAshby(ctx, name, slug)
+				v, err = g.probeAshby(ctx, e, slug)
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return out // canceled mid-probe: not done, not a failure of the name
+				}
+				out.failed = append(out.failed, fmt.Sprintf("%s %s/%s: %v", e.Name, provider, slug, err))
+				if probeErrors.Add(1) >= maxProbeErrors && aborted.CompareAndSwap(false, true) {
+					g.logger.Error("too many failed probes: the ATS APIs are refusing or failing; stopping", "failed_probes", maxProbeErrors)
+					cancel()
+				}
+				continue
 			}
 			switch v {
-			case boardOwned:
-				boards = append(boards, Candidate{CompanyName: name, ATSProvider: provider, ExternalBoardID: slug, BoardURL: publicURL(provider, slug)})
+			case boardOwned, boardProven:
+				if v != boardProven {
+					out.allProven = false
+				}
+				out.boards = append(out.boards, Candidate{CompanyName: e.Name, ATSProvider: provider, ExternalBoardID: slug,
+					BoardURL: publicURL(provider, slug), Verified: true})
 			case boardForeign:
-				unconfirmed = append(unconfirmed, fmt.Sprintf("%s %s/%s", name, provider, slug))
+				out.unconfirmed = append(out.unconfirmed, fmt.Sprintf("%s %s/%s", e.Name, provider, slug))
 			}
 		}
 	}
-	return boards, unconfirmed
+	out.done = true
+	return out
 }
 
 func publicURL(provider, slug string) string {
@@ -236,148 +532,202 @@ func publicURL(provider, slug string) string {
 	}
 }
 
-// get fetches a URL and returns the status and up to maxProbeBytes of body.
-func (g *Guesser) get(ctx context.Context, u string) (int, []byte) {
-	if g.pause > 0 {
-		select {
-		case <-time.After(g.pause):
-		case <-ctx.Done():
-			return 0, nil
-		}
-	}
-	req, err := http.NewRequestWithContext(httpclient.WithoutRetries(ctx), http.MethodGet, u, nil)
-	if err != nil {
-		return 0, nil
-	}
-	resp, err := g.http.Do(req)
-	if err != nil {
-		return 0, nil
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxProbeBytes))
-	return resp.StatusCode, body
-}
-
-// maxProbeBytes bounds what one probe reads: enough for the first jobs of a
-// board, never a whole 2 MB board.
-const maxProbeBytes = 1 << 20
-
 // verdict is what one probe learned about a slug on one ATS.
 type verdict int
 
 const (
-	boardNone    verdict = iota // no board, or nothing to read
+	boardNone    verdict = iota // no such board
 	boardEmpty                  // the company's board, with no jobs to ingest
 	boardForeign                // a board with jobs whose owner is not shown to be the company
-	boardOwned                  // the company's board, with jobs
+	boardOwned                  // the company's board, with jobs, by its name
+	boardProven                 // the company's board, with jobs, proven by its domain
 )
 
-func (g *Guesser) probeGreenhouse(ctx context.Context, name, slug string) verdict {
-	status, body := g.get(ctx, fmt.Sprintf("%s/%s", g.bases.greenhouse, url.PathEscape(slug)))
-	if status != http.StatusOK {
-		return boardNone
+// errProbe marks a probe that could not be completed (as opposed to a 404): a
+// rate limit, a server or network error, an unreadable body. The name is then
+// not fully checked, and the run reports it instead of calling it "not found".
+var errProbe = errors.New("probe failed")
+
+// get fetches a URL. It returns the body (the caller closes it) for a 200,
+// (nil, nil) for a 404, and an error for anything else.
+func (g *Guesser) get(ctx context.Context, u string) (io.ReadCloser, error) {
+	if g.pause > 0 {
+		select {
+		case <-time.After(g.pause):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	req, err := http.NewRequestWithContext(httpclient.WithoutRetries(ctx), http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProbe, err)
+	}
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errProbe, err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return resp.Body, nil
+	case http.StatusNotFound:
+		_ = resp.Body.Close()
+		return nil, nil
+	default:
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w: status %d", errProbe, resp.StatusCode)
+	}
+}
+
+// decodeJSON decodes one JSON value from a 200 body, bounded.
+func decodeJSON(body io.ReadCloser, v any) error {
+	defer body.Close()
+	if err := json.NewDecoder(io.LimitReader(body, maxBoardBytes)).Decode(v); err != nil {
+		return fmt.Errorf("%w: %v", errProbe, err)
+	}
+	return nil
+}
+
+func (g *Guesser) probeGreenhouse(ctx context.Context, e Entry, slug string) (verdict, error) {
+	body, err := g.get(ctx, fmt.Sprintf("%s/%s", g.bases.greenhouse, url.PathEscape(slug)))
+	if err != nil || body == nil {
+		return boardNone, err
 	}
 	var b struct {
 		Name string `json:"name"`
 	}
-	if json.Unmarshal(body, &b) != nil {
-		return boardNone
+	if err := decodeJSON(body, &b); err != nil {
+		return boardNone, err
 	}
-	if !namesMatch(name, b.Name) {
-		return boardForeign // a board exists under this slug, for some other company
+	nameOK := namesMatch(e.Name, b.Name)
+	if !nameOK && e.Domain == "" {
+		return boardForeign, nil // a board exists under this slug, for some other company
 	}
-	// Owned by the company; worth registering only if it has jobs.
-	status, body = g.get(ctx, fmt.Sprintf("%s/%s/jobs", g.bases.greenhouse, url.PathEscape(slug)))
-	if status != http.StatusOK {
-		return boardNone
-	}
-	var jobs struct {
-		Jobs []json.RawMessage `json:"jobs"`
-	}
-	if json.Unmarshal(body, &jobs) != nil {
-		return boardNone
-	}
-	if len(jobs.Jobs) == 0 {
-		return boardEmpty
-	}
-	return boardOwned
-}
 
-func (g *Guesser) probeLever(ctx context.Context, name, slug string) verdict {
-	status, body := g.get(ctx, fmt.Sprintf("%s/%s?mode=json&limit=%d", g.bases.lever, url.PathEscape(slug), identitySample))
-	if status != http.StatusOK {
-		return boardNone
+	listBody, err := g.get(ctx, fmt.Sprintf("%s/%s/jobs", g.bases.greenhouse, url.PathEscape(slug)))
+	if err != nil || listBody == nil {
+		return boardNone, err
 	}
-	var postings []struct {
-		Text             string `json:"text"`
-		DescriptionPlain string `json:"descriptionPlain"`
-		AdditionalPlain  string `json:"additionalPlain"`
-	}
-	if json.Unmarshal(body, &postings) != nil {
-		return boardNone
-	}
-	if len(postings) == 0 {
-		return boardEmpty // nothing to ingest, and nothing to say whose it is
-	}
-	texts := make([]string, 0, len(postings))
-	for _, p := range postings {
-		texts = append(texts, p.Text+" "+p.DescriptionPlain+" "+p.AdditionalPlain)
-	}
-	return ownership(name, texts)
-}
-
-// ownership turns the name check into a verdict for a board that has jobs.
-func ownership(name string, texts []string) verdict {
-	if ownedByName(name, texts) {
-		return boardOwned
-	}
-	return boardForeign
-}
-
-func (g *Guesser) probeAshby(ctx context.Context, name, slug string) verdict {
-	status, body := g.get(ctx, fmt.Sprintf("%s/%s", g.bases.ashby, url.PathEscape(slug)))
-	if status != http.StatusOK {
-		return boardNone
-	}
-	var b struct {
+	var list struct {
 		Jobs []struct {
-			Title            string `json:"title"`
-			DescriptionPlain string `json:"descriptionPlain"`
-			IsListed         *bool  `json:"isListed"`
+			ID int64 `json:"id"`
 		} `json:"jobs"`
 	}
-	if json.Unmarshal(body, &b) != nil {
-		return boardNone
+	if err := decodeJSON(listBody, &list); err != nil {
+		return boardNone, err
 	}
-	var texts []string
-	for _, j := range b.Jobs {
-		if j.IsListed != nil && !*j.IsListed {
-			continue
+	if len(list.Jobs) == 0 {
+		if nameOK {
+			return boardEmpty, nil
 		}
-		texts = append(texts, j.Title+" "+j.DescriptionPlain)
-		if len(texts) == identitySample {
-			break
+		return boardForeign, nil
+	}
+	// A domain was given: the board's first job saying it is proof, whatever the
+	// board calls itself (Greenhouse carries a job's text only in the job's own
+	// record).
+	if e.Domain != "" && list.Jobs[0].ID != 0 {
+		oneBody, err := g.get(ctx, fmt.Sprintf("%s/%s/jobs/%d", g.bases.greenhouse, url.PathEscape(slug), list.Jobs[0].ID))
+		if err != nil {
+			return boardNone, err
+		}
+		if oneBody != nil {
+			var one struct {
+				Content string `json:"content"`
+			}
+			if err := decodeJSON(oneBody, &one); err != nil {
+				return boardNone, err
+			}
+			if hasDomain(one.Content, e.Domain) || hasDomain(ats.HTMLToText(one.Content), e.Domain) {
+				return boardProven, nil
+			}
 		}
 	}
-	if len(texts) == 0 {
-		return boardEmpty // no listed job: nothing to ingest
+	// No domain proof: the exact board name is enough unless the name is an
+	// everyday word or lost its web-address ending.
+	if !nameOK || isCommonName(e.Name) || lostDomain(e.Name, slug) {
+		return boardForeign, nil
 	}
-	return ownership(name, texts)
+	return boardOwned, nil
 }
 
-// ownedByName reports whether the company's name appears in at least half
-// (rounded up, at least one) of the sampled job texts.
-func ownedByName(name string, texts []string) bool {
-	want := squash(strings.ReplaceAll(name, ".com", ""))
-	if want == "" || len(texts) == 0 {
-		return false
+func (g *Guesser) probeLever(ctx context.Context, e Entry, slug string) (verdict, error) {
+	body, err := g.get(ctx, fmt.Sprintf("%s/%s?mode=json&limit=%d", g.bases.lever, url.PathEscape(slug), identitySample))
+	if err != nil || body == nil {
+		return boardNone, err
 	}
-	hits := 0
-	for _, t := range texts {
-		if strings.Contains(squash(t), want) {
-			hits++
+	defer body.Close()
+	// A JSON array, decoded one posting at a time.
+	dec := json.NewDecoder(io.LimitReader(body, maxBoardBytes))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return boardNone, fmt.Errorf("%w: not a JSON array", errProbe)
+	}
+	var texts []string
+	for dec.More() && len(texts) < identitySample {
+		var p struct {
+			Text             string `json:"text"`
+			DescriptionPlain string `json:"descriptionPlain"`
+			AdditionalPlain  string `json:"additionalPlain"`
 		}
+		if err := dec.Decode(&p); err != nil {
+			return boardNone, fmt.Errorf("%w: %v", errProbe, err)
+		}
+		texts = append(texts, p.Text+" "+p.DescriptionPlain+" "+p.AdditionalPlain)
 	}
-	need := (len(texts) + 1) / 2
-	return hits >= need
+	return classify(e, texts, len(texts)), nil
+}
+
+func (g *Guesser) probeAshby(ctx context.Context, e Entry, slug string) (verdict, error) {
+	body, err := g.get(ctx, fmt.Sprintf("%s/%s", g.bases.ashby, url.PathEscape(slug)))
+	if err != nil || body == nil {
+		return boardNone, err
+	}
+	defer body.Close()
+	// Ashby returns the whole board (a few MB for the big ones) and has no way
+	// to ask for less, so the body is decoded as a stream and dropped as soon
+	// as the sample is complete. Hitting the byte cap is an error, never "no
+	// such board".
+	dec := json.NewDecoder(io.LimitReader(body, maxBoardBytes))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return boardNone, fmt.Errorf("%w: not a JSON object", errProbe)
+	}
+	var texts []string
+	sawJobs := false
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return boardNone, fmt.Errorf("%w: %v", errProbe, err)
+		}
+		if key, _ := keyTok.(string); key != "jobs" {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return boardNone, fmt.Errorf("%w: %v", errProbe, err)
+			}
+			continue
+		}
+		sawJobs = true
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+			return boardNone, fmt.Errorf("%w: jobs is not an array", errProbe)
+		}
+		for dec.More() {
+			var j struct {
+				Title            string `json:"title"`
+				DescriptionPlain string `json:"descriptionPlain"`
+				IsListed         *bool  `json:"isListed"`
+			}
+			if err := dec.Decode(&j); err != nil {
+				return boardNone, fmt.Errorf("%w: %v", errProbe, err)
+			}
+			if j.IsListed != nil && !*j.IsListed {
+				continue
+			}
+			texts = append(texts, j.Title+" "+j.DescriptionPlain)
+			if len(texts) >= identitySample {
+				return classify(e, texts, len(texts)), nil // enough to judge; the rest is not read
+			}
+		}
+		break
+	}
+	if !sawJobs {
+		return boardNone, fmt.Errorf("%w: no jobs field", errProbe)
+	}
+	return classify(e, texts, len(texts)), nil
 }

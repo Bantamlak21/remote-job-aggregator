@@ -330,3 +330,38 @@ func scanTarget(row pgx.Row) (*TargetCompany, error) {
 	}
 	return &t, nil
 }
+
+// NamedTarget is a target with its company's name.
+type NamedTarget struct {
+	TargetCompany
+	CompanyName string
+}
+
+const targetsByCompanyNamesQuery = `SELECT t.id, t.company_id, t.ats_provider, t.external_board_id, t.is_active, c.name
+	FROM target_companies t JOIN companies c ON c.id = t.company_id
+	WHERE lower(c.name) = ANY($1) AND t.ats_provider = ANY($2)
+	ORDER BY c.name, t.ats_provider, t.external_board_id`
+
+// ListByCompanyNames returns the targets of the named companies (matched
+// case-insensitively) whose provider is one of providers. Discovery uses it to
+// re-check boards it registered earlier.
+func (s *TargetStore) ListByCompanyNames(ctx context.Context, names, providers []string) ([]NamedTarget, error) {
+	lower := make([]string, len(names))
+	for i, n := range names {
+		lower[i] = strings.ToLower(strings.TrimSpace(n))
+	}
+	rows, err := s.pool.Query(ctx, targetsByCompanyNamesQuery, lower, providers)
+	if err != nil {
+		return nil, fmt.Errorf("company: listing targets by company names: %w", err)
+	}
+	defer rows.Close()
+	var out []NamedTarget
+	for rows.Next() {
+		var t NamedTarget
+		if err := rows.Scan(&t.ID, &t.CompanyID, &t.ATSProvider, &t.ExternalBoardID, &t.IsActive, &t.CompanyName); err != nil {
+			return nil, fmt.Errorf("company: scanning a target: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

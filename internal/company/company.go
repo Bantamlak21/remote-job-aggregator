@@ -229,7 +229,7 @@ const namesWithoutBoardQuery = `
 	FROM companies c
 	JOIN target_companies t ON t.company_id = c.id AND t.ats_provider = ANY($1)
 	WHERE NOT EXISTS (
-		SELECT 1 FROM target_companies b WHERE b.company_id = c.id AND b.ats_provider = ANY($2)
+		SELECT 1 FROM target_companies b WHERE b.company_id = c.id AND b.ats_provider = ANY($2) AND b.is_active
 	)
 	ORDER BY c.name
 	LIMIT $3`
@@ -237,12 +237,64 @@ const namesWithoutBoardQuery = `
 // NamesWithoutBoard lists the names of companies that have a target from one
 // of sourceProviders (a job board that names its employers) and none from any
 // of boardProviders (an ATS that would list all of the company's jobs
-// itself). Discovery uses it to look for the ATS board of every employer a
+// itself); a deactivated board does not count. Discovery uses it to look for the ATS board of every employer a
 // job board has shown. limit bounds the result.
 func (s *Store) NamesWithoutBoard(ctx context.Context, sourceProviders, boardProviders []string, limit int) ([]string, error) {
 	rows, err := s.pool.Query(ctx, namesWithoutBoardQuery, sourceProviders, boardProviders, limit)
 	if err != nil {
 		return nil, fmt.Errorf("company: listing names without a board: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("company: scanning a name: %w", err)
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+const namesWithBoardQuery = `
+	SELECT DISTINCT c.name FROM companies c
+	JOIN target_companies t ON t.company_id = c.id AND t.ats_provider = ANY($1) AND t.is_active`
+
+// NamesWithBoard lists the names of companies that already have an active
+// target from one of boardProviders. Discovery uses it to leave those
+// companies alone; a board that was deactivated (it stopped verifying) does not
+// count, so the company can be looked up again.
+func (s *Store) NamesWithBoard(ctx context.Context, boardProviders []string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, namesWithBoardQuery, boardProviders)
+	if err != nil {
+		return nil, fmt.Errorf("company: listing names with a board: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("company: scanning a name: %w", err)
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+const namesWithSourceAndBoardQuery = `
+	SELECT DISTINCT c.name
+	FROM companies c
+	JOIN target_companies s ON s.company_id = c.id AND s.ats_provider = ANY($1)
+	JOIN target_companies b ON b.company_id = c.id AND b.ats_provider = ANY($2) AND b.is_active
+	ORDER BY c.name`
+
+// NamesWithSourceAndBoard lists the names of companies that a job board
+// (sourceProviders) showed and that have an ATS board (boardProviders): the
+// boards discovery registered from employer names, which it re-checks.
+func (s *Store) NamesWithSourceAndBoard(ctx context.Context, sourceProviders, boardProviders []string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, namesWithSourceAndBoardQuery, sourceProviders, boardProviders)
+	if err != nil {
+		return nil, fmt.Errorf("company: listing names with a source and a board: %w", err)
 	}
 	defer rows.Close()
 	var names []string

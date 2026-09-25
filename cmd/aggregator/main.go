@@ -29,7 +29,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|discover-boards [names-file|-] [--from-boards] [--limit=N]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b] [--force]|serve>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|discover-boards [names-file|-] [--from-boards] [--limit=N] [--recheck [--apply]]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b] [--force]|serve>"
 
 const (
 	defaultSeedFile         = "configs/seed_companies.json"

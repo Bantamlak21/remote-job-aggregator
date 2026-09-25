@@ -248,3 +248,91 @@ func TestNamesWithoutBoard_ListsCompaniesAJobBoardShowedThatHaveNoATSBoardYet(t 
 		t.Errorf("limit 1 returned %v", got)
 	}
 }
+
+func TestListByCompanyNames_FindsTheNamedCompaniesBoardsOfTheGivenProviders(t *testing.T) {
+	ctx := context.Background()
+	reg, _, ts := newRegistrar(t)
+	mk := func(provider, name string) {
+		t.Helper()
+		if _, err := reg.EnsureTarget(ctx, provider, name, false, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("greenhouse", "Alpha")
+	mk("lever", "Alpha")
+	mk("himalayas", "Alpha") // not an ATS provider asked for
+	mk("ashby", "Bravo")
+	mk("ashby", "Charlie") // not asked for
+
+	got, err := ts.ListByCompanyNames(ctx, []string{" alpha ", "BRAVO", "nobody"}, []string{"greenhouse", "lever", "ashby"})
+	if err != nil {
+		t.Fatalf("ListByCompanyNames() failed: %v", err)
+	}
+	var keys []string
+	for _, tg := range got {
+		keys = append(keys, tg.CompanyName+" "+tg.ATSProvider+"/"+tg.ExternalBoardID)
+	}
+	want := []string{"Alpha greenhouse/alpha", "Alpha lever/alpha", "Bravo ashby/bravo"}
+	if !slices.Equal(keys, want) {
+		t.Errorf("targets = %v, want %v", keys, want)
+	}
+	if !got[0].IsActive {
+		t.Errorf("IsActive not read")
+	}
+}
+
+func TestNamesWithBoard_AndWithSourceAndBoard(t *testing.T) {
+	ctx := context.Background()
+	reg, cs, _ := newRegistrar(t)
+	mk := func(provider, name string) {
+		t.Helper()
+		if _, err := reg.EnsureTarget(ctx, provider, name, false, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("himalayas", "Alpha")
+	mk("lever", "Alpha")       // shown by a board, and has a board: in both lists
+	mk("greenhouse", "Bravo")  // a board only
+	mk("himalayas", "Charlie") // shown by a board only
+
+	atsProviders := []string{"greenhouse", "lever", "ashby"}
+	got, err := cs.NamesWithBoard(ctx, atsProviders)
+	if err != nil || !slices.Equal(got, []string{"Alpha", "Bravo"}) && !slices.Equal(got, []string{"Bravo", "Alpha"}) {
+		t.Errorf("NamesWithBoard = %v, %v; want Alpha and Bravo", got, err)
+	}
+	got, err = cs.NamesWithSourceAndBoard(ctx, []string{"himalayas"}, atsProviders)
+	if err != nil || !slices.Equal(got, []string{"Alpha"}) {
+		t.Errorf("NamesWithSourceAndBoard = %v, %v; want Alpha only", got, err)
+	}
+}
+
+func TestNamesWithBoard_AnInactiveBoardDoesNotCount(t *testing.T) {
+	ctx := context.Background()
+	reg, cs, ts := newRegistrar(t)
+	tg, err := reg.EnsureTarget(ctx, "ashby", "Delta", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.EnsureTarget(ctx, "himalayas", "Delta", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	atsProviders := []string{"greenhouse", "lever", "ashby"}
+	if got, _ := cs.NamesWithBoard(ctx, atsProviders); !slices.Equal(got, []string{"Delta"}) {
+		t.Fatalf("active board: NamesWithBoard = %v, want Delta", got)
+	}
+	if got, _ := cs.NamesWithoutBoard(ctx, []string{"himalayas"}, atsProviders, 10); len(got) != 0 {
+		t.Fatalf("active board: NamesWithoutBoard = %v, want none", got)
+	}
+	if err := ts.SetActive(ctx, tg.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := cs.NamesWithBoard(ctx, atsProviders); len(got) != 0 {
+		t.Errorf("inactive board: NamesWithBoard = %v, want none (the company can be looked up again)", got)
+	}
+	if got, _ := cs.NamesWithoutBoard(ctx, []string{"himalayas"}, atsProviders, 10); !slices.Equal(got, []string{"Delta"}) {
+		t.Errorf("inactive board: NamesWithoutBoard = %v, want Delta", got)
+	}
+	if got, _ := cs.NamesWithSourceAndBoard(ctx, []string{"himalayas"}, atsProviders); len(got) != 0 {
+		t.Errorf("inactive board: NamesWithSourceAndBoard = %v, want none", got)
+	}
+}
