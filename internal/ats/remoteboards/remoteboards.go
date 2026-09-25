@@ -260,22 +260,8 @@ func cleanLocation(s string) string {
 	return trailingJunk.ReplaceAllString(s, "")
 }
 
-// employment maps a board's job type text to the jobs table's vocabulary,
-// "" when it says nothing usable.
-func employment(s string) string {
-	k := strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(s))
-	switch k {
-	case "fulltime":
-		return "full_time"
-	case "parttime":
-		return "part_time"
-	case "contract", "contractor", "freelance", "temporary", "temp":
-		return "contract"
-	case "intern", "internship":
-		return "internship"
-	}
-	return ""
-}
+// employment maps a board's job type text to the jobs table's vocabulary.
+func employment(s string) string { return ats.EmploymentType(s) }
 
 func truncateRunes(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {

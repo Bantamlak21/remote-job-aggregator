@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/ashby"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/careers"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/ethiojobs"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/feed"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/greenhouse"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/jobsearch"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/lever"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/remoteboards"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
@@ -58,6 +60,10 @@ const (
 var remoteBoards = []string{boardHimalayas, boardRemotive, boardJobicy, boardWWR, boardWorkingNomads, boardRemoteOK}
 
 var collectorOrder = append([]string{collectorEthiojobs, collectorLinkedIn}, remoteBoards...)
+
+// boardProbePause is the delay each discover-boards worker leaves between
+// requests to the ATS APIs.
+const boardProbePause = 150 * time.Millisecond
 
 // listingFetchPause is the delay between successive listing-page fetches of
 // a job board.
@@ -108,6 +114,8 @@ func newIngestSources(cfg *config.Config, httpClient *httpclient.Client, priorit
 	s := ingestSources{
 		clients: map[string]ingestion.ATSClient{
 			string(ats.ProviderGreenhouse):  greenhouse.New(httpClient),
+			string(ats.ProviderLever):       lever.New(httpClient),
+			string(ats.ProviderAshby):       ashby.New(httpClient),
 			string(ats.ProviderFeed):        feed.New(httpClient, robotsChecker, 0),
 			string(ats.ProviderCareersSite): careers.New(pages, 0, 0, detailFetchPause),
 		},

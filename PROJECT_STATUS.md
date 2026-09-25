@@ -814,6 +814,17 @@ are refused; a Himalayas or Ethiojobs run cut short stores its jobs and still re
 Known limit: most of these jobs are country-restricted (about 120 of 760 are open to
 "Worldwide"); eligibility filtering is Phase 4.
 
+### Remote-first companies' own boards (branch `Bantamlak21/remote-company-boards-e451cddd`)
+
+Lever and Ashby clients (`internal/ats/lever`, `internal/ats/ashby`; Greenhouse now reads remote /
+hybrid from the location text), and `aggregator discover-boards`, which finds a company's
+Greenhouse/Lever/Ashby board from its name and registers it only when the board proves it is the
+company's (`internal/discovery/guess.go`). `configs/remote_companies.txt` has 404 names;
+`--from-boards` looks up the employers the remote job boards showed. First live run: 171
+companies / 180 boards from the list, 41 more from 300 job-board employers; ingest stored 9,965
+new jobs (the worldwide list now about 11,800 open jobs from about 780 companies). Details,
+limits and the measured numbers: [docs/company-boards.md](docs/company-boards.md).
+
 ## 3. Work In Progress
 
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-

@@ -131,9 +131,29 @@ func (c *Client) ListJobs(ctx context.Context, boardToken string) ([]ats.Job, er
 			LocationRaw: ats.CleanText(j.Location.Name),
 			Description: ats.HTMLToText(j.Content),
 			PublishedAt: parseTime(j.FirstPublished),
+			RemoteType:  workplaceFromLocation(j.Location.Name),
 		})
 	}
 	return jobs, nil
+}
+
+var (
+	remoteWord = regexp.MustCompile(`(?i)\bremote\b`)
+	hybridWord = regexp.MustCompile(`(?i)\bhybrid\b`)
+)
+
+// workplaceFromLocation reads the only workplace signal a Greenhouse posting
+// carries: its location text ("Remote - US", "Hybrid, London"). "" when the
+// text says neither, so an office location is left unclassified rather than
+// guessed to be onsite.
+func workplaceFromLocation(location string) string {
+	switch {
+	case remoteWord.MatchString(location):
+		return "remote"
+	case hybridWord.MatchString(location):
+		return "hybrid"
+	}
+	return ""
 }
 
 // parseTime parses Greenhouse's RFC3339 timestamps (e.g.

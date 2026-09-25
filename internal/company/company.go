@@ -223,3 +223,35 @@ func scanCompany(row pgx.Row) (*Company, error) {
 	c.Status = Status(status)
 	return &c, nil
 }
+
+const namesWithoutBoardQuery = `
+	SELECT DISTINCT c.name
+	FROM companies c
+	JOIN target_companies t ON t.company_id = c.id AND t.ats_provider = ANY($1)
+	WHERE NOT EXISTS (
+		SELECT 1 FROM target_companies b WHERE b.company_id = c.id AND b.ats_provider = ANY($2)
+	)
+	ORDER BY c.name
+	LIMIT $3`
+
+// NamesWithoutBoard lists the names of companies that have a target from one
+// of sourceProviders (a job board that names its employers) and none from any
+// of boardProviders (an ATS that would list all of the company's jobs
+// itself). Discovery uses it to look for the ATS board of every employer a
+// job board has shown. limit bounds the result.
+func (s *Store) NamesWithoutBoard(ctx context.Context, sourceProviders, boardProviders []string, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, namesWithoutBoardQuery, sourceProviders, boardProviders, limit)
+	if err != nil {
+		return nil, fmt.Errorf("company: listing names without a board: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, fmt.Errorf("company: scanning a name: %w", err)
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}

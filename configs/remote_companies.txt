@@ -1,0 +1,410 @@
+# Remote-first and remote-friendly companies, by name. `aggregator discover-boards`
+# looks each one up on Greenhouse, Lever and Ashby (a name is enough: the boards
+# are addressed by a slug that is nearly always the company's name) and
+# registers the boards that prove they are the company's. A name with no public
+# board there is simply not found; adding a name costs a handful of requests.
+# One name per line; blank lines and lines starting with # are ignored.
+GitLab
+Automattic
+Zapier
+Doist
+Buffer
+Toptal
+Deel
+Remote
+Oyster
+Hotjar
+Elastic
+Canonical
+Mozilla
+Sourcegraph
+Vercel
+Netlify
+Cloudflare
+HashiCorp
+Grafana Labs
+PostHog
+Supabase
+Sentry
+Ghost
+Basecamp
+Articulate
+Close
+DuckDuckGo
+Ahrefs
+Wikimedia Foundation
+InVision
+Kraken
+Coinbase
+Fivetran
+dbt Labs
+Airbyte
+Mattermost
+Prefect
+Docker
+Datadog
+Twilio
+Stripe
+Figma
+Notion
+Linear
+Ramp
+Mercury
+Retool
+Airtable
+Loom
+Miro
+Canva
+Webflow
+Squarespace
+Shopify
+Gumroad
+Calendly
+Typeform
+Intercom
+Front
+Help Scout
+Zendesk
+HubSpot
+Mailchimp
+Customer.io
+Segment
+Amplitude
+Mixpanel
+Heap
+LaunchDarkly
+Split
+Optimizely
+PagerDuty
+Honeycomb
+Chronosphere
+New Relic
+Snyk
+1Password
+Bitwarden
+Tailscale
+Cockroach Labs
+PlanetScale
+Neon
+Timescale
+MongoDB
+Redis
+Confluent
+Materialize
+Databricks
+Snowflake
+Anyscale
+Hugging Face
+Weights & Biases
+Scale AI
+OpenAI
+Anthropic
+Cohere
+Mistral AI
+Replit
+Glitch
+Fly.io
+Render
+Railway
+DigitalOcean
+Linode
+Vultr
+Backblaze
+Fastly
+Akamai
+Postman
+Kong
+Apollo GraphQL
+Hasura
+Prisma
+Temporal
+Pulumi
+Terraform
+Gruntwork
+Mux
+Cloudinary
+Imgix
+Contentful
+Sanity
+Storyblok
+Strapi
+Algolia
+Meilisearch
+Typesense
+Gitpod
+CircleCI
+Buildkite
+Harness
+JFrog
+Sonatype
+GitHub
+Bitbucket
+Atlassian
+JetBrains
+Tabnine
+Codecov
+Rollbar
+LogRocket
+FullStory
+Pendo
+WalkMe
+Whereby
+Around
+Krisp
+Descript
+Riverside
+Zencastr
+Podia
+Teachable
+Thinkific
+Kajabi
+Patreon
+Substack
+Medium
+Beehiiv
+ConvertKit
+Kit
+Lemon Squeezy
+Paddle
+FastSpring
+Chargebee
+Recurly
+Wise
+Revolut
+Monzo
+Chime
+Plaid
+Brex
+Gusto
+Rippling
+Remote.com
+Papaya Global
+Velocity Global
+Multiplier
+Omnipresent
+Remofirst
+Lano
+Hibob
+Personio
+Culture Amp
+Lattice
+15Five
+Leapsome
+Workleap
+Greenhouse
+Lever
+Ashby
+Gem
+SeekOut
+Hired
+Wellfound
+Andela
+Turing
+Crossover
+Working Solutions
+Upwork
+Fiverr
+Freelancer
+Braintrust
+Gun.io
+Arc
+Torre
+Terminal
+Bitovi
+Thoughtbot
+Ministry of Programming
+Ten Thousand Coffees
+Aha
+Asana
+Trello
+Monday.com
+ClickUp
+Coda
+Slite
+Almanac
+Tettra
+Guru
+Slack
+Discord
+Twist
+Zoom
+Element
+Matrix
+Signal
+Proton
+Tutanota
+Mullvad
+Nord Security
+Surfshark
+ExpressVPN
+WP Engine
+Kinsta
+Pantheon
+Acquia
+Drupal
+Yoast
+Awesome Motive
+Liquid Web
+Jetpack
+WooCommerce
+Human Made
+10up
+XWP
+Sucuri
+Wordfence
+Gravity Forms
+Elementor
+Beaver Builder
+Delicious Brains
+Iterable
+Braze
+OneSignal
+Klaviyo
+Attentive
+Postscript
+Yotpo
+Gorgias
+Recharge
+Bold Commerce
+Shogun
+Nosto
+Bloomreach
+Lucidworks
+Coveo
+Sitecore
+Contentstack
+Prismic
+Tinybird
+ClickHouse
+Starburst
+Dremio
+Preset
+Metabase
+Lightdash
+Hex
+Observable
+Deepnote
+Mode
+Looker
+Sigma Computing
+Census
+Hightouch
+RudderStack
+mParticle
+Snowplow
+Statsig
+GrowthBook
+Unleash
+Flagsmith
+Doppler
+Infisical
+Vault
+Teleport
+Boundary
+Okta
+Auth0
+Clerk
+Stytch
+WorkOS
+FusionAuth
+Ory
+Keycloak
+Aiven
+Ably
+Appwrite
+Attio
+Axiom
+Bitrise
+BrowserStack
+Bubble
+Calm
+CARTO
+Chainguard
+Checkly
+CodeSandbox
+Codeium
+Cursor
+Dagster
+Daily
+Dashlane
+DataStax
+Directus
+Dovetail
+Drata
+Dropbox
+Duolingo
+Embrace
+Expo
+Fauna
+Fireworks AI
+Flatfile
+Formstack
+Frontend Masters
+Frontegg
+Gitea
+GitKraken
+Grafbase
+Groq
+Harvest
+Heroku
+Honeybadger
+Hopin
+Hyperbeam
+Incident.io
+Indeed
+Jam
+Jellyfish
+Kandji
+Knock
+Lightspeed
+LiveKit
+Loops
+Mailgun
+Mapbox
+Modal
+Modern Treasury
+Mysten Labs
+n8n
+Nango
+Netdata
+Nomad
+Nuxt
+Ockam
+OpenSea
+Orb
+Outschool
+Oxide
+Pipedrive
+Pitch
+Polar
+Qovery
+Quickbase
+Raycast
+Readme
+Redpanda
+Resend
+Rive
+Scaleway
+Semaphore
+Sendgrid
+Shipbob
+Speakeasy
+Stainless
+Sumo Logic
+Svix
+Tailwind Labs
+Tandem
+Trigger.dev
+Turso
+Unkey
+Upstash
+Vanta
+Vimeo
+Warp
+Wasmer
+Whimsical
+Xata
+Yugabyte
+Zed Industries
+Zeplin
+Zuora

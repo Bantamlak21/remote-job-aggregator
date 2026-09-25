@@ -29,7 +29,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b] [--force]|serve>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|discover-boards [names-file|-] [--from-boards] [--limit=N]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b] [--force]|serve>"
 
 const (
 	defaultSeedFile         = "configs/seed_companies.json"
@@ -112,7 +112,7 @@ func run(ctx context.Context, args []string) error {
 
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "seed-priority", "priority-report", "ingest", "serve":
+	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "discover-boards", "seed-priority", "priority-report", "ingest", "serve":
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q: %s", cmd, usage)
@@ -152,6 +152,8 @@ func run(ctx context.Context, args []string) error {
 		return runDiscover(ctx, cfg, logger, rest)
 	case "search-discover":
 		return runSearchDiscover(ctx, cfg, logger, rest)
+	case "discover-boards":
+		return runDiscoverBoards(ctx, cfg, logger, rest)
 	case "seed-priority":
 		return runSeedPriority(ctx, cfg, logger, rest)
 	case "priority-report":

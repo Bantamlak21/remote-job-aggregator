@@ -3,6 +3,7 @@ package company_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -210,5 +211,40 @@ func TestRegistrar_MarketIsSetDefaultedAndNeverResetBySilence(t *testing.T) {
 	}
 	if _, err := reg.EnsureTarget(ctx, "ethiojobs", "Bad Co", false, "mars"); err == nil {
 		t.Errorf("an unknown market was accepted")
+	}
+}
+
+func TestNamesWithoutBoard_ListsCompaniesAJobBoardShowedThatHaveNoATSBoardYet(t *testing.T) {
+	ctx := context.Background()
+	reg, cs, ts := newRegistrar(t)
+
+	board := func(provider, employer string) int64 {
+		t.Helper()
+		tg, err := reg.EnsureTarget(ctx, provider, employer, false, "")
+		if err != nil {
+			t.Fatalf("EnsureTarget(%s, %s): %v", provider, employer, err)
+		}
+		return tg.CompanyID
+	}
+	board("himalayas", "Alpha")   // shown by a board, no ATS board: listed
+	board("remotive", "Bravo")    // same
+	board("himalayas", "Charlie") // shown by a board, but has a Lever board: not listed
+	board("lever", "Charlie")
+	board("greenhouse", "Delta") // an ATS board only, never shown by a job board: not listed
+	board("ethiojobs", "Echo")   // shown by a source that is not one of the given boards: not listed
+	alpha, _ := cs.GetByName(ctx, "Alpha")
+	if _, err := ts.Upsert(ctx, company.TargetUpsertParams{CompanyID: alpha.ID, ATSProvider: "jobicy", ExternalBoardID: "alpha jobicy"}); err != nil {
+		t.Fatalf("second board target: %v", err)
+	}
+
+	got, err := cs.NamesWithoutBoard(ctx, []string{"himalayas", "remotive", "jobicy"}, []string{"greenhouse", "lever", "ashby"}, 100)
+	if err != nil {
+		t.Fatalf("NamesWithoutBoard() failed: %v", err)
+	}
+	if want := []string{"Alpha", "Bravo"}; !slices.Equal(got, want) {
+		t.Errorf("names = %v, want %v (each once, alphabetical)", got, want)
+	}
+	if got, _ := cs.NamesWithoutBoard(ctx, []string{"himalayas", "remotive"}, []string{"lever"}, 1); len(got) != 1 {
+		t.Errorf("limit 1 returned %v", got)
 	}
 }

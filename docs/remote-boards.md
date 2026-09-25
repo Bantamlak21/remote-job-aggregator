@@ -13,6 +13,9 @@ remote-job boards read through the free APIs and RSS feeds they publish for this
 | Working Nomads | `workingnomads` | `workingnomads.com/api/exposed_jobs/` | about 57 | the feed it publishes for this use | 1 h |
 | Remote OK | `remoteok` | `remoteok.com/api` | 100 | link back with follow, a credit, never its logo | 1 h |
 
+Companies' own boards (Greenhouse, Lever, Ashby), found by name, are the other half of the
+worldwide list: see [company-boards.md](company-boards.md).
+
 `internal/ats/remoteboards` has one client per board. All are `ingestion.Collector`s in the
 worldwide market, so an employer becomes a company and a worldwide target on first sight.
 

@@ -61,6 +61,10 @@ aggregator ingest [--providers=a,b]   # fetch jobs from the active targets (Gree
                                        # never run by default: name them, --providers=search
                                        # (LinkedIn, per priority company) or --providers=linkedin
                                        # (LinkedIn, by keyword). See docs/fresh-jobs.md
+aggregator discover-boards [names|-] # find companies' Greenhouse/Lever/Ashby boards from names
+                                       # (default configs/remote_companies.txt; --from-boards adds
+                                       # employers the remote job boards showed). See
+                                       # docs/company-boards.md
 aggregator seed-priority [file]       # register the Ethiopian priority companies and their
                                        # sources (default configs/ethiopian_companies.json)
 aggregator priority-report            # per-company open jobs by source, and how many of the

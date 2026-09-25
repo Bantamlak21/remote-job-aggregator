@@ -59,6 +59,8 @@ type Provider string
 // per employer (board id = the employer's lower-cased name).
 const (
 	ProviderGreenhouse  Provider = "greenhouse"
+	ProviderLever       Provider = "lever"
+	ProviderAshby       Provider = "ashby"
 	ProviderFeed        Provider = "feed"
 	ProviderCareersSite Provider = "careers-site"
 	ProviderSearch      Provider = "search"
@@ -258,4 +260,38 @@ func collapseWhitespace(s string) string {
 		}
 	}
 	return out.String()
+}
+
+// EmploymentType maps an ATS or job board's employment text ("Full-time",
+// "Permanent", "Contractor", "Intern") to the jobs table's vocabulary
+// (full_time, part_time, contract, internship). "" means the text says
+// nothing usable, and a stored value is then left alone.
+func EmploymentType(s string) string {
+	k := strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(s))
+	switch k {
+	case "fulltime", "permanent", "regular":
+		return "full_time"
+	case "parttime":
+		return "part_time"
+	case "contract", "contractor", "freelance", "temporary", "temp", "fixedterm":
+		return "contract"
+	case "intern", "internship":
+		return "internship"
+	}
+	return ""
+}
+
+// WorkplaceType maps an ATS's workplace text ("remote", "Hybrid", "on-site",
+// "OnSite") to the jobs table's vocabulary (remote, hybrid, onsite); ""
+// when it is unspecified.
+func WorkplaceType(s string) string {
+	switch strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(s)) {
+	case "remote":
+		return "remote"
+	case "hybrid":
+		return "hybrid"
+	case "onsite", "inoffice", "office":
+		return "onsite"
+	}
+	return ""
 }

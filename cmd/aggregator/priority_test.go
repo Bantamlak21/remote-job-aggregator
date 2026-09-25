@@ -89,8 +89,8 @@ func sourcesFor(serperKey string) ingestSources {
 
 // The free sources run by default; the Serper-backed ones never do.
 var freeDefaults = []string{
-	"careers-site", "ethiojobs", "feed", "greenhouse",
-	"himalayas", "jobicy", "remoteok", "remotive", "weworkremotely", "workingnomads",
+	"ashby", "careers-site", "ethiojobs", "feed", "greenhouse", "himalayas", "jobicy",
+	"lever", "remoteok", "remotive", "weworkremotely", "workingnomads",
 }
 
 func TestNewIngestSources_WithoutASerperKeyOnlyTheFreeSourcesExist(t *testing.T) {
@@ -226,6 +226,7 @@ func TestRun_NewCommandsAreRegistered(t *testing.T) {
 	for _, args := range [][]string{
 		{"priority-report", "extra"},
 		{"seed-priority", "a", "b"},
+		{"discover-boards", "a", "b"},
 	} {
 		err := run(context.Background(), args)
 		if err == nil || strings.Contains(err.Error(), "unknown command") {
