@@ -281,6 +281,71 @@ func TestListByCompanyNames_FindsTheNamedCompaniesBoardsOfTheGivenProviders(t *t
 	}
 }
 
+func TestListByCompanyNames_ReadsTheDiscoverySource(t *testing.T) {
+	ctx := context.Background()
+	_, cs, ts := newRegistrar(t)
+	a, err := cs.Upsert(ctx, company.UpsertParams{Name: "Alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Upsert(ctx, company.TargetUpsertParams{CompanyID: a.ID, ATSProvider: "lever", ExternalBoardID: "alpha",
+		DiscoveryMetadata: map[string]any{"source": "discover-boards"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Upsert(ctx, company.TargetUpsertParams{CompanyID: a.ID, ATSProvider: "ashby", ExternalBoardID: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ts.ListByCompanyNames(ctx, []string{"alpha"}, []string{"lever", "ashby"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string]string{}
+	for _, tg := range got {
+		sources[tg.ATSProvider] = tg.Source
+	}
+	if sources["lever"] != "discover-boards" || sources["ashby"] != "" || len(got) != 2 {
+		t.Errorf("sources = %v, want lever=discover-boards and ashby empty", sources)
+	}
+}
+
+func TestJobTitlesByCompany_ReturnsTheDistinctTitlesTheGivenSourcesHold(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	cs, ts := company.NewStore(db.Pool), company.NewTargetStore(db.Pool)
+	reg := company.NewRegistrar(cs, ts)
+	add := func(provider, name, jobID, title string) {
+		t.Helper()
+		tg, err := reg.EnsureTarget(ctx, provider, name, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO jobs (company_id, target_company_id, source, source_job_id, title, application_url, content_hash)
+			VALUES ($1, $2, $3, $4, $5, 'https://example.com/x', 'h')`, tg.CompanyID, tg.ID, provider, jobID, title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("himalayas", "Alpha", "1", "Backend Engineer")
+	add("remotive", "Alpha", "2", "Backend Engineer") // the same title from another board: once
+	add("remotive", "Alpha", "3", "Designer")
+	add("lever", "Alpha", "4", "From The Company's Own Board") // not a job board source
+	add("himalayas", "Bravo", "5", "Chef")
+	add("himalayas", "Charlie", "6", "Not asked for")
+
+	got, err := cs.JobTitlesByCompany(ctx, []string{"himalayas", "remotive"}, []string{" ALPHA ", "bravo", "nobody"})
+	if err != nil {
+		t.Fatalf("JobTitlesByCompany() failed: %v", err)
+	}
+	want := map[string][]string{"alpha": {"Backend Engineer", "Designer"}, "bravo": {"Chef"}}
+	if len(got) != len(want) {
+		t.Fatalf("titles = %v, want %v", got, want)
+	}
+	for k, w := range want {
+		if !slices.Equal(got[k], w) {
+			t.Errorf("titles[%q] = %v, want %v", k, got[k], w)
+		}
+	}
+}
+
 func TestNamesWithBoard_AndWithSourceAndBoard(t *testing.T) {
 	ctx := context.Background()
 	reg, cs, _ := newRegistrar(t)

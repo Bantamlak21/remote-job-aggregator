@@ -101,40 +101,69 @@ func TestShippedRemoteCompaniesLoad(t *testing.T) {
 	}
 }
 
-func namedTarget(id int64, name, provider, board string) company.NamedTarget {
-	return company.NamedTarget{TargetCompany: company.TargetCompany{ID: id, ATSProvider: provider, ExternalBoardID: board, IsActive: true}, CompanyName: name}
+func namedTarget(id int64, name, provider, board, source string) company.NamedTarget {
+	return company.NamedTarget{TargetCompany: company.TargetCompany{ID: id, ATSProvider: provider, ExternalBoardID: board, IsActive: true}, CompanyName: name, Source: source}
 }
 
-// Only a board the fresh look-up did not verify, for a company that was fully
-// checked, is stale.
+func staleIDs(in []company.NamedTarget) []int64 {
+	var ids []int64
+	for _, s := range in {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+// A board is stale only when discover-boards registered it, the look-up found
+// a board at that provider and slug that names itself as another company's,
+// and the company was fully checked. Everything else is left alone.
 func TestStaleBoards(t *testing.T) {
+	const db = discovery.SourceDiscoverBoards
 	existing := []company.NamedTarget{
-		namedTarget(1, "Wise", "greenhouse", "wise"),         // no longer verifies: stale
-		namedTarget(2, "Zapier", "ashby", "zapier"),          // verifies: kept
-		namedTarget(3, "Neon", "lever", "neon"),              // not verified, but the run did not finish checking Neon
-		namedTarget(4, "GitLab", "greenhouse", "gitlab-old"), // a second board that did not verify: stale
-		namedTarget(5, "GitLab", "greenhouse", "gitlab"),     // verifies: kept
+		namedTarget(1, "Wise", "greenhouse", "wise", db),            // refused as another company's: stale
+		namedTarget(2, "Zapier", "ashby", "zapier", db),             // verifies: kept
+		namedTarget(3, "Neon", "lever", "neon", db),                 // refused, but the run did not finish checking Neon
+		namedTarget(4, "GitLab", "greenhouse", "gitlab-old", db),    // refused next to a verified board: stale
+		namedTarget(5, "GitLab", "greenhouse", "gitlab", db),        // verifies: kept
+		namedTarget(6, "Sentry", "lever", "sentry", ""),             // refused, but seeded by a person: never touched
+		namedTarget(7, "Moved", "ashby", "moved", db),               // simply not found again (no refusal): kept
+		namedTarget(8, "Ramp", "ashby", "ramp", db),                 // refused under another name's case: matched case-insensitively
+		namedTarget(9, "Notion", "greenhouse", "notion", "other"),   // another tool's board: never touched
+		namedTarget(10, "Backblaze", "greenhouse", "backblaze", db), // refused only as unproven: kept
+		namedTarget(11, "Toptal", "lever", "toptal", db),            // refused only for want of a shared title: kept
 	}
 	verified := []discovery.Candidate{
 		{CompanyName: "Zapier", ATSProvider: "ashby", ExternalBoardID: "zapier"},
 		{CompanyName: "GitLab", ATSProvider: "greenhouse", ExternalBoardID: "GitLab"},
 	}
-	got := staleBoards(existing, verified, map[string]bool{"neon": true})
-	var ids []int64
-	for _, s := range got {
-		ids = append(ids, s.ID)
+	refused := []discovery.Refusal{
+		{Name: "Wise", Provider: "greenhouse", Slug: "wise", Kind: discovery.NamedForAnother},
+		{Name: "Neon", Provider: "lever", Slug: "neon", Kind: discovery.NamedForAnother},
+		{Name: "GitLab", Provider: "greenhouse", Slug: "gitlab-old", Kind: discovery.NamedForAnother},
+		{Name: "Sentry", Provider: "lever", Slug: "sentry", Kind: discovery.NamedForAnother},
+		{Name: "ramp", Provider: "ashby", Slug: "RAMP", Kind: discovery.NamedForAnother},
+		{Name: "Notion", Provider: "greenhouse", Slug: "notion", Kind: discovery.NamedForAnother},
+		{Name: "Backblaze", Provider: "greenhouse", Slug: "backblaze", Kind: discovery.Unproven}, // its jobs never say its name
+		{Name: "Toptal", Provider: "lever", Slug: "toptal", Kind: discovery.NoSharedTitle},       // its titles differ from a job board's
 	}
-	if !slices.Equal(ids, []int64{1, 4}) {
-		t.Errorf("stale board ids = %v, want [1 4]", ids)
+	got := staleBoards(existing, verified, refused, map[string]bool{"neon": true})
+	if want := []int64{1, 4, 8}; !slices.Equal(staleIDs(got), want) {
+		t.Errorf("stale board ids = %v, want %v", staleIDs(got), want)
+	}
+	// With no refusals nothing is ever stale, whatever was not found.
+	if got := staleBoards(existing, nil, nil, nil); len(got) != 0 {
+		t.Errorf("stale without any refusal = %v, want none", staleIDs(got))
 	}
 }
 
 func TestUncheckedNames(t *testing.T) {
 	got := uncheckedNames(discovery.GuessReport{
 		Unreached: []string{"Alpha Co"},
-		Failed:    []string{"Grafana Labs greenhouse/grafanalabs: probe failed: status 429", "GitLab lever/gitlab: probe failed: status 500"},
+		Failed: []discovery.Failure{
+			{Name: "Grafana Labs", Provider: "greenhouse", Slug: "grafanalabs", Err: "status 429"},
+			{Name: "Acme: Labs", Provider: "lever", Slug: "acmelabs", Err: "probe failed: status 500"}, // a ": " in the name
+		},
 	})
-	for _, want := range []string{"alpha co", "grafana labs", "gitlab"} {
+	for _, want := range []string{"alpha co", "grafana labs", "acme: labs"} {
 		if !got[want] {
 			t.Errorf("uncheckedNames lacks %q: %v", want, got)
 		}

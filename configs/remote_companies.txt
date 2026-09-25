@@ -15,7 +15,7 @@ GitLab
 Automattic
 Zapier | zapier.com
 Doist
-Buffer
+Buffer | buffer.com
 Toptal
 Deel
 Remote
@@ -68,7 +68,7 @@ Shopify
 Gumroad
 Calendly
 Typeform
-Intercom
+Intercom | intercom.com
 Front
 Help Scout
 Zendesk
@@ -128,7 +128,7 @@ Temporal
 Pulumi
 Terraform
 Gruntwork
-Mux
+Mux | mux.com
 Cloudinary
 Imgix
 Contentful
@@ -163,7 +163,7 @@ Riverside
 Zencastr
 Podia
 Teachable
-Thinkific
+Thinkific | thinkific.com
 Kajabi
 Patreon
 Substack
@@ -179,7 +179,7 @@ Recurly
 Wise
 Revolut
 Monzo
-Chime
+Chime | chime.com
 Plaid
 Brex
 Gusto
@@ -241,7 +241,7 @@ Signal
 Proton
 Tutanota
 Mullvad
-Nord Security
+Nord Security | nordsec.com
 Surfshark
 ExpressVPN
 WP Engine
@@ -303,14 +303,14 @@ Statsig
 GrowthBook
 Unleash
 Flagsmith
-Doppler
+Doppler | doppler.com
 Infisical
 Vault
 Teleport
 Boundary
 Okta
 Auth0
-Clerk
+Clerk | clerk.com
 Stytch
 WorkOS
 FusionAuth
@@ -379,7 +379,7 @@ Nuxt
 Ockam
 OpenSea
 Orb
-Outschool
+Outschool | outschool.com
 Oxide
 Pipedrive
 Pitch
@@ -411,7 +411,7 @@ Warp
 Wasmer
 Whimsical
 Xata
-Yugabyte
+Yugabyte | yugabyte.com
 Zed Industries
 Zeplin
 Zuora

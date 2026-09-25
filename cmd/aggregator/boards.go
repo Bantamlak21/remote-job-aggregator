@@ -103,6 +103,22 @@ func withoutBoards(in []discovery.Entry, have []string) []discovery.Entry {
 	return out
 }
 
+// employerEntries makes an entry for each employer name a job board showed,
+// carrying the titles of the jobs the boards hold for it: a board that is
+// proven only by name must list one of them, because a company of the same
+// name (an insurer called Sentry) lists other jobs.
+func employerEntries(ctx context.Context, companies *company.Store, names []string) ([]discovery.Entry, error) {
+	titles, err := companies.JobTitlesByCompany(ctx, remoteBoards, names)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]discovery.Entry, 0, len(names))
+	for _, n := range names {
+		out = append(out, discovery.Entry{Name: n, Titles: titles[strings.ToLower(strings.TrimSpace(n))]})
+	}
+	return out, nil
+}
+
 // runDiscoverBoards finds the Greenhouse, Lever and Ashby job boards of the
 // companies in a names file (and, with --from-boards, of every employer a
 // remote job board has shown that has no ATS board yet), and registers each
@@ -143,9 +159,12 @@ func runDiscoverBoards(ctx context.Context, cfg *config.Config, logger *slog.Log
 				logger.Error("listing employers with a board failed", "error", err)
 				return err
 			}
-			for _, n := range fromDB {
-				entries = append(entries, discovery.Entry{Name: n})
+			employers, err := employerEntries(ctx, company.NewStore(db.Pool), fromDB)
+			if err != nil {
+				logger.Error("reading the employers' job titles failed", "error", err)
+				return err
 			}
+			entries = append(entries, employers...)
 		}
 		return runRecheck(ctx, cfg, logger, db, entries, a)
 	}
@@ -157,9 +176,12 @@ func runDiscoverBoards(ctx context.Context, cfg *config.Config, logger *slog.Log
 			return err
 		}
 		logger.Info("employers shown by job boards that have no ATS board yet", "count", len(fromDB))
-		for _, n := range fromDB {
-			entries = append(entries, discovery.Entry{Name: n})
+		employers, err := employerEntries(ctx, company.NewStore(db.Pool), fromDB)
+		if err != nil {
+			logger.Error("reading the employers' job titles failed", "error", err)
+			return err
 		}
+		entries = append(entries, employers...)
 	}
 	// Leave companies that already have a board alone: a rerun looks at what is new.
 	have, err := company.NewStore(db.Pool).NamesWithBoard(ctx, atsBoardProviders)
@@ -181,10 +203,10 @@ func runDiscoverBoards(ctx context.Context, cfg *config.Config, logger *slog.Log
 	candidates, report := guesser.Guess(ctx, entries)
 	logger.Info("job board search complete",
 		"companies", report.Names, "with_a_board", report.Found, "boards", report.Boards,
-		"none_found", len(report.NotFound), "unconfirmed", len(report.Unconfirmed), "ambiguous", len(report.Ambiguous),
+		"none_found", len(report.NotFound), "refused", len(report.Refused), "ambiguous", len(report.Ambiguous),
 		"need_a_domain", len(report.NeedsDomain), "failed_probes", len(report.Failed), "not_reached", len(report.Unreached))
-	for _, u := range report.Unconfirmed {
-		logger.Info("a board exists but does not show it is the company's; not registered", "board", u)
+	for _, r := range report.Refused {
+		logger.Info("a board exists but is not registered as the company's", "company", r.Name, "board", r.Provider+"/"+r.Slug, "why", r.Reason)
 	}
 	for _, n := range report.Ambiguous {
 		logger.Info("the name verified on more than one board; not registered (add 'Name | domain' to the names file to settle it)", "company", n)
@@ -193,7 +215,7 @@ func runDiscoverBoards(ctx context.Context, cfg *config.Config, logger *slog.Log
 		logger.Info("the name is an everyday word and cannot be told from another company's by name; add 'Name | domain' to the names file", "company", n)
 	}
 	for _, f := range report.Failed {
-		logger.Warn("a probe failed; the name was not fully checked", "probe", f)
+		logger.Warn("a probe failed; the name was not fully checked", "company", f.Name, "board", f.Provider+"/"+f.Slug, "error", f.Err)
 	}
 	if report.Aborted {
 		return fmt.Errorf("discover-boards: stopped after too many failed probes (rate limited?); %d of %d names not reached", len(report.Unreached), report.Names)
@@ -209,19 +231,37 @@ func runDiscoverBoards(ctx context.Context, cfg *config.Config, logger *slog.Log
 	return reportDiscoveryResults(logger, d.Run(ctx, candidates))
 }
 
-// staleBoards returns the registered boards that the fresh look-up did not
-// verify: a board whose company was fully checked (no failed or unreached
-// probe) and whose (provider, slug) is not among the verified candidates. A
-// company that was not fully checked is never judged.
-func staleBoards(existing []company.NamedTarget, verified []discovery.Candidate, unchecked map[string]bool) []company.NamedTarget {
+// boardKey identifies a board of a company, case-insensitively.
+func boardKey(name, provider, slug string) string {
+	return strings.ToLower(name) + "|" + provider + "|" + strings.ToLower(slug)
+}
+
+// staleBoards returns the registered boards a re-check may deactivate. All
+// four must hold:
+//   - discover-boards registered it (Source), so a board a person seeded is
+//     never touched;
+//   - the fresh look-up found a board at that provider and slug that names
+//     itself as another company's (discovery.NamedForAnother). Anything weaker
+//     is not evidence: a board that does not say the company's name (most
+//     companies' jobs never do), one whose jobs share no title with a job
+//     board's few listings, a slug that moved, a bad night;
+//   - no verified board of the same (provider, slug) exists for the name;
+//   - the company was fully checked (no failed probe, not left unreached).
+func staleBoards(existing []company.NamedTarget, verified []discovery.Candidate, refused []discovery.Refusal, unchecked map[string]bool) []company.NamedTarget {
 	ok := map[string]bool{}
 	for _, c := range verified {
-		ok[strings.ToLower(c.CompanyName)+"|"+c.ATSProvider+"|"+strings.ToLower(c.ExternalBoardID)] = true
+		ok[boardKey(c.CompanyName, c.ATSProvider, c.ExternalBoardID)] = true
+	}
+	no := map[string]bool{}
+	for _, r := range refused {
+		if r.Kind == discovery.NamedForAnother {
+			no[boardKey(r.Name, r.Provider, r.Slug)] = true
+		}
 	}
 	var out []company.NamedTarget
 	for _, t := range existing {
-		name := strings.ToLower(t.CompanyName)
-		if unchecked[name] || ok[name+"|"+t.ATSProvider+"|"+strings.ToLower(t.ExternalBoardID)] {
+		k := boardKey(t.CompanyName, t.ATSProvider, t.ExternalBoardID)
+		if t.Source != discovery.SourceDiscoverBoards || unchecked[strings.ToLower(t.CompanyName)] || ok[k] || !no[k] {
 			continue
 		}
 		out = append(out, t)
@@ -237,20 +277,16 @@ func uncheckedNames(report discovery.GuessReport) map[string]bool {
 		out[strings.ToLower(n)] = true
 	}
 	for _, f := range report.Failed {
-		// "Name provider/slug: error": the name is everything before the last " provider/slug".
-		if i := strings.Index(f, ": "); i > 0 {
-			head := f[:i]
-			if j := strings.LastIndex(head, " "); j > 0 {
-				out[strings.ToLower(head[:j])] = true
-			}
-		}
+		out[strings.ToLower(f.Name)] = true
 	}
 	return out
 }
 
 // runRecheck re-verifies, under the current rules, the boards registered for
-// the companies in the names file. Boards that no longer verify are listed;
-// with --apply they are deactivated and their jobs closed.
+// the companies in the names file. A board discover-boards registered that the
+// look-up finds named for another company is listed; with --apply it is
+// deactivated and its jobs closed. Any other board that did not verify is
+// left alone and mentioned, for a person to judge.
 func runRecheck(ctx context.Context, cfg *config.Config, logger *slog.Logger, db *database.DB, entries []discovery.Entry, a discoverBoardsArgs) error {
 	entries = cleanBoardEntries(entries)
 	if a.limit > 0 && len(entries) > a.limit {
@@ -286,8 +322,27 @@ func runRecheck(ctx context.Context, cfg *config.Config, logger *slog.Logger, db
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("discover-boards: interrupted; nothing was changed: %w", err)
 	}
-	stale := staleBoards(existing, verified, uncheckedNames(report))
+	stale := staleBoards(existing, verified, report.Refused, uncheckedNames(report))
 	jobs := job.NewStore(db.Pool)
+	// Boards the look-up did not find again but has no evidence against: left
+	// alone, and said so, because a person may want to look.
+	confirmed := map[string]bool{}
+	for _, c := range verified {
+		confirmed[boardKey(c.CompanyName, c.ATSProvider, c.ExternalBoardID)] = true
+	}
+	condemned := map[int64]bool{}
+	for _, t := range stale {
+		condemned[t.ID] = true
+	}
+	unchecked := uncheckedNames(report)
+	for _, t := range existing {
+		if !t.IsActive || condemned[t.ID] || unchecked[strings.ToLower(t.CompanyName)] ||
+			confirmed[boardKey(t.CompanyName, t.ATSProvider, t.ExternalBoardID)] {
+			continue
+		}
+		logger.Info("a registered board was not confirmed but nothing shows it is wrong; left as it is",
+			"company", t.CompanyName, "provider", t.ATSProvider, "board", t.ExternalBoardID)
+	}
 	for _, t := range stale {
 		logger.Warn("a registered board does not verify as the company's",
 			"company", t.CompanyName, "provider", t.ATSProvider, "board", t.ExternalBoardID, "active", t.IsActive, "apply", a.apply)

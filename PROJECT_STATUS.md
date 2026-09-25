@@ -821,11 +821,13 @@ hybrid from the location text), and `aggregator discover-boards`, which finds a 
 Greenhouse/Lever/Ashby board from its name and registers it only when the board proves it is the
 company's (`internal/discovery/guess.go`). `configs/remote_companies.txt` has 404 names (some as `Name | domain`);
 `--from-boards` looks up the employers the remote job boards showed; `--recheck --apply`
-re-verifies registered boards. The first live run registered 6 boards of other companies (3.4%),
+re-looks-up registered boards and deactivates only one that `discover-boards` registered and that
+names itself as another company's. The first live run registered 6 boards of other companies (3.4%),
 so the identity rules were rebuilt around positive proof (domain, exact Greenhouse name, whole-word
 name in half the sampled jobs, everyday-word names refused without a domain, ambiguity refused) and
-measured on 15 real boards (100% precision). After the re-check: 199 companies with an active
-board, and a worldwide list of 15,749 open jobs from 814 companies (5,247 classified remote). Details,
+measured on 15 real boards (100% precision); an employer a job board showed must also list one of
+its job titles. Live: 210 companies with an active board, and a worldwide list of 15,954 open jobs
+from 818 companies (5,262 classified remote). Details,
 limits and the measured numbers: [docs/company-boards.md](docs/company-boards.md).
 
 ## 3. Work In Progress

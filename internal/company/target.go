@@ -335,9 +335,13 @@ func scanTarget(row pgx.Row) (*TargetCompany, error) {
 type NamedTarget struct {
 	TargetCompany
 	CompanyName string
+	// Source is discovery_metadata's "source" ("" when the board was not
+	// registered by a tool that says so).
+	Source string
 }
 
-const targetsByCompanyNamesQuery = `SELECT t.id, t.company_id, t.ats_provider, t.external_board_id, t.is_active, c.name
+const targetsByCompanyNamesQuery = `SELECT t.id, t.company_id, t.ats_provider, t.external_board_id, t.is_active, c.name,
+		COALESCE(t.discovery_metadata->>'source', '')
 	FROM target_companies t JOIN companies c ON c.id = t.company_id
 	WHERE lower(c.name) = ANY($1) AND t.ats_provider = ANY($2)
 	ORDER BY c.name, t.ats_provider, t.external_board_id`
@@ -358,7 +362,7 @@ func (s *TargetStore) ListByCompanyNames(ctx context.Context, names, providers [
 	var out []NamedTarget
 	for rows.Next() {
 		var t NamedTarget
-		if err := rows.Scan(&t.ID, &t.CompanyID, &t.ATSProvider, &t.ExternalBoardID, &t.IsActive, &t.CompanyName); err != nil {
+		if err := rows.Scan(&t.ID, &t.CompanyID, &t.ATSProvider, &t.ExternalBoardID, &t.IsActive, &t.CompanyName, &t.Source); err != nil {
 			return nil, fmt.Errorf("company: scanning a target: %w", err)
 		}
 		out = append(out, t)

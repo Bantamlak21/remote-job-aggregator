@@ -73,6 +73,15 @@ func names(ns ...string) []Entry {
 	return out
 }
 
+// refused lists the refused boards as "Name provider/slug".
+func refused(r GuessReport) []string {
+	var out []string
+	for _, x := range r.Refused {
+		out = append(out, x.Name+" "+x.Provider+"/"+x.Slug)
+	}
+	return out
+}
+
 func boards(cs []Candidate) []string {
 	var out []string
 	for _, c := range cs {
@@ -127,8 +136,8 @@ func TestGuess_GreenhouseNeedsTheBoardNamedExactlyAsTheCompany(t *testing.T) {
 			t.Errorf("%s not marked Verified: the page probe adds nothing to the API's proof", c.ExternalBoardID)
 		}
 	}
-	if !slices.Equal(report.Unconfirmed, []string{"Intercom greenhouse/intercom", "Acme greenhouse/acme"}) {
-		t.Errorf("Unconfirmed = %v, want the Intercom and Acme boards", report.Unconfirmed)
+	if !slices.Equal(refused(report), []string{"Intercom greenhouse/intercom", "Acme greenhouse/acme"}) {
+		t.Errorf("Unconfirmed = %v, want the Intercom and Acme boards", refused(report))
 	}
 	if !slices.Equal(report.NotFound, []string{"Initech", "Nobody"}) {
 		t.Errorf("NotFound = %v, want Initech (empty board) and Nobody", report.NotFound)
@@ -142,8 +151,8 @@ func TestGuess_ANameWithAWebAddressEndingKeepsItAndNeverFallsBackToTheBareWord(t
 		"gh/customer/jobs": `{"jobs":[{"id":1}]}`,
 	})
 	got, report := g.Guess(context.Background(), names("Customer.io"))
-	if len(got) != 0 || !slices.Equal(report.Unconfirmed, []string{"Customer.io greenhouse/customer"}) {
-		t.Errorf("candidates = %v, unconfirmed = %v; want the bare 'customer' board refused", boards(got), report.Unconfirmed)
+	if len(got) != 0 || !slices.Equal(refused(report), []string{"Customer.io greenhouse/customer"}) {
+		t.Errorf("candidates = %v, unconfirmed = %v; want the bare 'customer' board refused", boards(got), refused(report))
 	}
 	if !slices.Contains(f.requests, "/gh/customerio") {
 		t.Errorf("requests = %v, want /gh/customerio tried", f.requests)
@@ -170,8 +179,8 @@ func TestGuess_AnEverydayWordGreenhouseBoardNeedsTheDomainInItsFirstJob(t *testi
 	}
 	g, _ := newFakeATS(t, bodies)
 	got, report := g.Guess(context.Background(), names("Wise | wise.com"))
-	if len(got) != 0 || len(report.Unconfirmed) != 1 {
-		t.Errorf("candidates = %v, unconfirmed = %v; want the board refused (its job never says wise.com)", boards(got), report.Unconfirmed)
+	if len(got) != 0 || len(refused(report)) != 1 {
+		t.Errorf("candidates = %v, unconfirmed = %v; want the board refused (its job never says wise.com)", boards(got), refused(report))
 	}
 	bodies["gh/wise/jobs/3"] = `{"content":"Wise is money without borders. Visit wise.com to learn more."}`
 	g, _ = newFakeATS(t, bodies)
@@ -220,8 +229,8 @@ func TestGuess_LeverAndAshbyNeedTheNameAsAWholeWordInHalfTheJobsOnABoardOfAtLeas
 	if !slices.Equal(boards(got), want) {
 		t.Errorf("candidates = %v, want %v", boards(got), want)
 	}
-	if !slices.Equal(report.Unconfirmed, []string{"Solo lever/solo", "Rampant lever/rampant", "Quarters lever/quarters"}) {
-		t.Errorf("Unconfirmed = %v", report.Unconfirmed)
+	if !slices.Equal(refused(report), []string{"Solo lever/solo", "Rampant lever/rampant", "Quarters lever/quarters"}) {
+		t.Errorf("Unconfirmed = %v", refused(report))
 	}
 }
 
@@ -265,8 +274,8 @@ func TestGuess_AnUnlistedAshbyJobDoesNotVouchForTheOwner(t *testing.T) {
 		"ashby/quickly": `{"jobs":[{"title":"Sales","descriptionPlain":"We sell things","isListed":true},{"title":"Quickly engineer","descriptionPlain":"Quickly is hiring","isListed":false},{"title":"Ops","descriptionPlain":"We run things","isListed":true}]}`,
 	})
 	got, report := g.Guess(context.Background(), names("Quickly"))
-	if len(got) != 0 || !slices.Equal(report.Unconfirmed, []string{"Quickly ashby/quickly"}) {
-		t.Errorf("candidates = %v, unconfirmed = %v; want the board refused (only the unlisted job names the company)", boards(got), report.Unconfirmed)
+	if len(got) != 0 || !slices.Equal(refused(report), []string{"Quickly ashby/quickly"}) {
+		t.Errorf("candidates = %v, unconfirmed = %v; want the board refused (only the unlisted job names the company)", boards(got), refused(report))
 	}
 }
 
@@ -312,8 +321,8 @@ func TestGuess_AnEverydayWordNameIsNotLookedUpWithoutADomain_AndIsSettledByOne(t
 	}
 	g, _ = newFakeATS(t, bodies)
 	got, report = g.Guess(context.Background(), names("Close | close.com"))
-	if len(got) != 0 || len(report.Unconfirmed) != 1 {
-		t.Errorf("wrong domain: %v %v, want the board refused", boards(got), report.Unconfirmed)
+	if len(got) != 0 || len(refused(report)) != 1 {
+		t.Errorf("wrong domain: %v %v, want the board refused", boards(got), refused(report))
 	}
 }
 
@@ -344,7 +353,7 @@ func TestGuess_ARateLimitOrServerErrorIsAFailedProbeNotAMissingBoard(t *testing.
 	if len(got) != 0 {
 		t.Errorf("candidates = %v", boards(got))
 	}
-	if len(report.Failed) != 2 || !strings.HasPrefix(report.Failed[0], "GitLab greenhouse/gitlab") {
+	if len(report.Failed) != 2 || report.Failed[0].Name != "GitLab" || report.Failed[0].Provider != "greenhouse" || report.Failed[0].Slug != "gitlab" {
 		t.Errorf("Failed = %v, want the two failed probes", report.Failed)
 	}
 	if !slices.Equal(report.NotFound, []string{"Nobody"}) {
@@ -562,9 +571,6 @@ func TestSlugVariants(t *testing.T) {
 			t.Errorf("slugVariants(%q) = %v, want %v", name, got, want)
 		}
 	}
-	if !lostDomain("Customer.io", "customer") || lostDomain("Customer.io", "customerio") || lostDomain("Acme", "acme") {
-		t.Errorf("lostDomain misjudges which slug dropped the web-address ending")
-	}
 }
 
 func TestNamesMatch(t *testing.T) {
@@ -595,7 +601,7 @@ func TestParseEntry(t *testing.T) {
 		"Ramp | nodot":               {Name: "Ramp"},
 		"Ramp |":                     {Name: "Ramp"},
 	} {
-		if got := ParseEntry(line); got != want {
+		if got := ParseEntry(line); got.Name != want.Name || got.Domain != want.Domain || len(got.Titles) != 0 {
 			t.Errorf("ParseEntry(%q) = %+v, want %+v", line, got, want)
 		}
 	}
@@ -690,5 +696,311 @@ func TestEval_OwnershipOnRealBoards(t *testing.T) {
 	}
 	if recall < 0.9 {
 		t.Errorf("recall %.0f%% (%d of %d) fell below 90%%", recall*100, truePos, truePos+falseNeg)
+	}
+}
+
+// ---- the edges of the name rule ----
+
+// mixedLever builds a Lever board of n jobs of which the first `naming` say the
+// text and the rest say nothing.
+func mixedLever(n, naming int, text string) string {
+	var jobs []string
+	for i := 0; i < n; i++ {
+		d := "Nothing to see"
+		if i < naming {
+			d = text
+		}
+		jobs = append(jobs, fmt.Sprintf(`{"text":"Role %d","descriptionPlain":%q,"additionalPlain":""}`, i, d))
+	}
+	return `[` + strings.Join(jobs, ",") + `]`
+}
+
+func mixedAshby(n, naming int, text string) string {
+	var jobs []string
+	for i := 0; i < n; i++ {
+		d := "Nothing to see"
+		if i < naming {
+			d = text
+		}
+		jobs = append(jobs, fmt.Sprintf(`{"title":"Role %d","descriptionPlain":%q,"isListed":true}`, i, d))
+	}
+	return `{"jobs":[` + strings.Join(jobs, ",") + `]}`
+}
+
+// Half of the sample (rounded up) must name the company: 4 of 8, not 3 of 8; 1
+// of 2, not 0 of 2 (and 2 of 3, since the sample of 3 needs 2).
+func TestGuess_TheNameMustAppearInHalfTheSampledJobs_AtTheBoundary(t *testing.T) {
+	g, _ := newFakeATS(t, map[string]string{
+		"lever/half":     mixedLever(8, 4, "Half is hiring"),
+		"lever/short":    mixedLever(8, 3, "Short is hiring"),
+		"ashby/halfa":    mixedAshby(8, 4, "Halfa is hiring"),
+		"ashby/shorta":   mixedAshby(8, 3, "Shorta is hiring"),
+		"lever/pair":     mixedLever(2, 1, "Pair is hiring"),
+		"lever/pairless": mixedLever(2, 0, "Pairless is hiring"),
+		"ashby/three":    mixedAshby(3, 1, "Three is hiring"),
+	})
+	got, report := g.Guess(context.Background(), names("Half", "Short", "Halfa", "Shorta", "Pair", "Pairless", "Three"))
+	var have []string
+	for _, c := range got {
+		have = append(have, c.CompanyName)
+	}
+	if want := []string{"Half", "Halfa", "Pair"}; !slices.Equal(have, want) {
+		t.Errorf("registered %v, want %v", have, want)
+	}
+	if want := []string{"Short lever/short", "Shorta ashby/shorta", "Pairless lever/pairless", "Three ashby/three"}; !slices.Equal(refused(report), want) {
+		t.Errorf("refused %v, want %v", refused(report), want)
+	}
+}
+
+// Only the first identitySample jobs are judged: jobs past them cannot vouch.
+func TestGuess_JobsPastTheSampleDoNotVouchForTheOwner(t *testing.T) {
+	late := func(fmtJob string, text string) string {
+		var jobs []string
+		for i := 0; i < 30; i++ {
+			d := "Nothing to see"
+			if i >= identitySample {
+				d = text
+			}
+			jobs = append(jobs, fmt.Sprintf(fmtJob, i, d))
+		}
+		return strings.Join(jobs, ",")
+	}
+	g, _ := newFakeATS(t, map[string]string{
+		"lever/late":  "[" + late(`{"text":"Role %d","descriptionPlain":%q,"additionalPlain":""}`, "Late is hiring") + "]",
+		"ashby/latea": `{"jobs":[` + late(`{"title":"Role %d","descriptionPlain":%q,"isListed":true}`, "Latea is hiring") + `]}`,
+	})
+	got, report := g.Guess(context.Background(), names("Late", "Latea"))
+	if len(got) != 0 || !slices.Equal(refused(report), []string{"Late lever/late", "Latea ashby/latea"}) {
+		t.Errorf("registered %v, refused %v; want both refused (only jobs past the sample name them)", boards(got), refused(report))
+	}
+}
+
+// Unlisted Ashby jobs are neither counted as listed nor sampled: a board of one
+// listed job is too small, and unlisted jobs naming the company do not vouch.
+func TestGuess_UnlistedAshbyJobsAreSkippedWhenCountingAndSampling(t *testing.T) {
+	g, _ := newFakeATS(t, map[string]string{
+		"ashby/onlylisted": `{"jobs":[{"title":"A","descriptionPlain":"Onlylisted is hiring","isListed":true},{"title":"B","descriptionPlain":"Onlylisted","isListed":false},{"title":"C","descriptionPlain":"Onlylisted","isListed":false}]}`,
+		"ashby/mostly":     `{"jobs":[{"title":"A","descriptionPlain":"Mostly","isListed":false},{"title":"B","descriptionPlain":"Mostly","isListed":false},{"title":"C","descriptionPlain":"Mostly","isListed":false},{"title":"D","descriptionPlain":"x","isListed":true},{"title":"E","descriptionPlain":"y","isListed":true}]}`,
+		"ashby/fine":       `{"jobs":[{"title":"A","descriptionPlain":"Fine","isListed":false},{"title":"B","descriptionPlain":"Fine is hiring","isListed":true},{"title":"C","descriptionPlain":"Fine team","isListed":true}]}`,
+	})
+	got, report := g.Guess(context.Background(), names("Onlylisted", "Mostly", "Fine"))
+	if len(got) != 1 || got[0].CompanyName != "Fine" {
+		t.Errorf("registered %v, want only Fine", boards(got))
+	}
+	if want := []string{"Onlylisted ashby/onlylisted", "Mostly ashby/mostly"}; !slices.Equal(refused(report), want) {
+		t.Errorf("refused %v, want %v", refused(report), want)
+	}
+}
+
+// ---- same name, other company: the job board's own titles corroborate ----
+
+func withTitles(name string, titles ...string) Entry { return Entry{Name: name, Titles: titles} }
+
+func TestGuess_ANameProvenBoardMustListATitleTheEmployerListed(t *testing.T) {
+	ramp := `{"jobs":[{"title":"Ramp Agent","descriptionPlain":"Ramp Agent duties at the airport. Ramp","isListed":true},{"title":"Baggage Handler","descriptionPlain":"Ramp operations","isListed":true}]}`
+	sentry := `[{"text":"Claims Adjuster","descriptionPlain":"Sentry Insurance is hiring","additionalPlain":""},{"text":"Underwriter","descriptionPlain":"Sentry Insurance offers","additionalPlain":""}]`
+	linear := `{"jobs":[{"title":"Linear Accelerator Technician","descriptionPlain":"Linear accelerator service. Linear","isListed":true},{"title":"Radiation Therapist","descriptionPlain":"Linear","isListed":true}]}`
+	g, _ := newFakeATS(t, map[string]string{"ashby/ramp": ramp, "lever/sentry": sentry, "ashby/linear": linear})
+	got, report := g.Guess(context.Background(), []Entry{
+		withTitles("Ramp", "Senior Backend Engineer", "Account Executive"),
+		withTitles("Sentry", "Backend Engineer"),
+		withTitles("Linear", "Product Designer"),
+	})
+	if len(got) != 0 {
+		t.Errorf("registered %v, want none: each board names the company but lists none of the employer's jobs", boards(got))
+	}
+	if want := []string{"Ramp ashby/ramp", "Sentry lever/sentry", "Linear ashby/linear"}; !slices.Equal(refused(report), want) {
+		t.Errorf("refused %v, want %v", refused(report), want)
+	}
+	for _, r := range report.Refused {
+		if !strings.Contains(r.Reason, "job titles") {
+			t.Errorf("reason %q does not say why", r.Reason)
+		}
+	}
+
+	// The same boards, when the employer lists one of their titles (compared
+	// loosely: case and punctuation), are the company's.
+	g, _ = newFakeATS(t, map[string]string{"ashby/ramp": ramp, "lever/sentry": sentry, "ashby/linear": linear})
+	got, _ = g.Guess(context.Background(), []Entry{
+		withTitles("Ramp", "Account Executive", "baggage handler"),
+		withTitles("Sentry", "Underwriter!"),
+		withTitles("Linear", "Product Designer", "Radiation  Therapist"),
+	})
+	if len(got) != 3 {
+		t.Errorf("registered %v, want all three", boards(got))
+	}
+}
+
+// Titles are compared over the whole board, not the sampled jobs; and a domain
+// proof needs no titles.
+func TestGuess_TitleCorroborationReadsTheWholeBoard_AndADomainNeedsNone(t *testing.T) {
+	var jobs []string
+	for i := 0; i < 20; i++ {
+		title := fmt.Sprintf("Role %d", i)
+		if i == 17 {
+			title = "Staff Data Engineer"
+		}
+		jobs = append(jobs, fmt.Sprintf(`{"title":%q,"descriptionPlain":"Acme is hiring","isListed":true}`, title))
+	}
+	board := `{"jobs":[` + strings.Join(jobs, ",") + `]}`
+	g, _ := newFakeATS(t, map[string]string{"ashby/acme": board})
+	got, _ := g.Guess(context.Background(), []Entry{withTitles("Acme", "Staff Data Engineer")})
+	if len(got) != 1 {
+		t.Errorf("registered %v; the matching title is the 18th job and the whole board is compared", boards(got))
+	}
+	g, _ = newFakeATS(t, map[string]string{"lever/acme": leverBoard(3, "Acme is hiring")})
+	got, _ = g.Guess(context.Background(), []Entry{withTitles("Acme", "Something Else")})
+	if len(got) != 0 {
+		t.Errorf("registered %v; no shared title on a Lever board", boards(got))
+	}
+	g, _ = newFakeATS(t, map[string]string{"lever/acme": leverBoard(3, "Acme (acme.example) is hiring")})
+	got, _ = g.Guess(context.Background(), []Entry{{Name: "Acme", Domain: "acme.example", Titles: []string{"Something Else"}}})
+	if len(got) != 1 {
+		t.Errorf("registered %v; the domain is proof whatever the titles", boards(got))
+	}
+	// Greenhouse: the jobs list carries titles.
+	g, _ = newFakeATS(t, map[string]string{"gh/acme": `{"name":"Acme"}`, "gh/acme/jobs": `{"jobs":[{"id":1,"title":"Chef"}]}`})
+	got, report := g.Guess(context.Background(), []Entry{withTitles("Acme", "Barista")})
+	if len(got) != 0 || !slices.Equal(refused(report), []string{"Acme greenhouse/acme"}) {
+		t.Errorf("greenhouse: registered %v, refused %v; want the board refused (no shared title)", boards(got), refused(report))
+	}
+	g, _ = newFakeATS(t, map[string]string{"gh/acme": `{"name":"Acme"}`, "gh/acme/jobs": `{"jobs":[{"id":1,"title":"Chef"}]}`})
+	if got, _ = g.Guess(context.Background(), []Entry{withTitles("Acme", "chef")}); len(got) != 1 {
+		t.Errorf("greenhouse with a shared title: %v, want the board", boards(got))
+	}
+}
+
+// Only a Greenhouse board that says, in its own name, that it is another
+// company's is positive evidence (NamedForAnother); everything else refused is
+// weaker, and a re-check must not deactivate a board on it.
+func TestGuess_RefusalKindsSeparatePositiveEvidenceFromWeakDoubt(t *testing.T) {
+	g, _ := newFakeATS(t, map[string]string{
+		"gh/intercom":        `{"name":"Fin"}`,
+		"gh/intercom/jobs":   `{"jobs":[{"id":1,"title":"A"}]}`,
+		"gh/emptyco":         `{"name":"Other Corp"}`,
+		"gh/emptyco/jobs":    `{"jobs":[]}`,
+		"lever/quiet":        leverBoard(4, "We build things"),
+		"lever/titled":       leverBoard(4, "Titled is hiring"),
+		"gh/wise":            `{"name":"Wise"}`,
+		"gh/wise/jobs":       `{"jobs":[{"id":3,"title":"A"}]}`,
+		"gh/wise/jobs/3":     `{"content":"an insurance agency"}`,
+		"gh/acmerocket":      `{"name":"Acme Rocket"}`,
+		"gh/acmerocket/jobs": `{"jobs":[{"id":1,"title":"Pilot"}]}`,
+	})
+	_, report := g.Guess(context.Background(), []Entry{
+		{Name: "Intercom"}, {Name: "Emptyco"}, {Name: "Quiet"},
+		{Name: "Titled", Titles: []string{"Nothing Shared"}},
+		{Name: "Wise", Domain: "wise.com"},
+		{Name: "Acmerocket", Domain: "acmerocket.io"},
+	})
+	got := map[string]RefusalKind{}
+	for _, r := range report.Refused {
+		got[r.Name] = r.Kind
+	}
+	want := map[string]RefusalKind{
+		"Intercom":   NamedForAnother, // the board is named "Fin"
+		"Emptyco":    NamedForAnother, // named for another company even with no jobs
+		"Quiet":      Unproven,
+		"Titled":     NoSharedTitle,
+		"Wise":       Unproven,        // an everyday-word name, board name matches, domain never said
+		"Acmerocket": NamedForAnother, // named "Acme Rocket"; a domain was given but no job says it
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kinds = %v, want %v", got, want)
+	}
+	for name, k := range want {
+		if got[name] != k {
+			t.Errorf("%s: kind %d, want %d", name, got[name], k)
+		}
+	}
+}
+
+// A failure carries its parts: a company name with ": " in it is still the
+// company's name.
+func TestGuess_FailuresAreStructured(t *testing.T) {
+	g, f := newFakeATS(t, map[string]string{})
+	f.status["gh/acmelabs"] = http.StatusInternalServerError
+	_, report := g.Guess(context.Background(), names("Acme: Labs"))
+	if len(report.Failed) == 0 {
+		t.Fatalf("no failure reported: %+v", report)
+	}
+	fl := report.Failed[0]
+	if fl.Name != "Acme: Labs" || fl.Provider != "greenhouse" || fl.Slug != "acmelabs" || !strings.Contains(fl.Err, "500") {
+		t.Errorf("failure = %+v", fl)
+	}
+}
+
+// With employer titles the whole board is read for titles, but the identity
+// sample stays the first identitySample jobs: later jobs cannot vouch.
+func TestGuess_WithTitlesTheIdentitySampleIsStillBounded(t *testing.T) {
+	var lever, ashby []string
+	for i := 0; i < 30; i++ {
+		d := "Nothing to see"
+		if i >= identitySample {
+			d = "Late is hiring"
+		}
+		lever = append(lever, fmt.Sprintf(`{"text":"Role %d","descriptionPlain":%q,"additionalPlain":""}`, i, d))
+		ashby = append(ashby, fmt.Sprintf(`{"title":"Role %d","descriptionPlain":%q,"isListed":true}`, i, d))
+	}
+	g, _ := newFakeATS(t, map[string]string{
+		"lever/late":  "[" + strings.Join(lever, ",") + "]",
+		"ashby/latea": `{"jobs":[` + strings.Join(ashby, ",") + `]}`,
+	})
+	got, report := g.Guess(context.Background(), []Entry{withTitles("Late", "Role 25"), withTitles("Latea", "Role 25")})
+	if len(got) != 0 || len(report.Refused) != 2 {
+		t.Errorf("registered %v, refused %v; want both refused (a shared title does not stretch the sample)", boards(got), refused(report))
+	}
+}
+
+// A Lever server that ignores `limit` is not read past the sample either.
+func TestGuess_ALeverBoardIsJudgedFromItsFirstPostingsWithoutWaitingForTheRest(t *testing.T) {
+	g, f := newFakeATS(t, map[string]string{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f.handler = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/lever/acme" {
+			return false
+		}
+		var jobs []string
+		for i := 0; i < identitySample+2; i++ {
+			jobs = append(jobs, `{"text":"Role","descriptionPlain":"Acme is hiring","additionalPlain":""}`)
+		}
+		_, _ = w.Write([]byte(`[` + strings.Join(jobs, ",") + `,`)) // ... and the body never ends
+		w.(http.Flusher).Flush()
+		<-release
+		return true
+	}
+	done := make(chan []Candidate, 1)
+	go func() {
+		got, _ := g.Guess(context.Background(), names("Acme"))
+		done <- got
+	}()
+	select {
+	case got := <-done:
+		if len(got) != 1 {
+			t.Errorf("candidates = %v, want the board", boards(got))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Guess kept reading a Lever board it already had a full sample of")
+	}
+}
+
+// Lever is asked for only the sample unless titles need the whole board.
+func TestGuess_LeverIsAskedForOnlyTheSampleUnlessTitlesNeedMore(t *testing.T) {
+	g, f := newFakeATS(t, map[string]string{})
+	var queries []string
+	f.handler = func(w http.ResponseWriter, r *http.Request) bool {
+		if strings.HasPrefix(r.URL.Path, "/lever/") {
+			f.mu.Lock()
+			queries = append(queries, r.URL.RawQuery)
+			f.mu.Unlock()
+		}
+		return false
+	}
+	g.Guess(context.Background(), names("Acme"))
+	g.Guess(context.Background(), []Entry{withTitles("Beta", "X")})
+	want := []string{fmt.Sprintf("mode=json&limit=%d", identitySample), "mode=json"}
+	if !slices.Equal(queries, want) {
+		t.Errorf("lever queries = %q, want %q", queries, want)
 	}
 }

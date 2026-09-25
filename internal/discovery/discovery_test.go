@@ -158,6 +158,34 @@ func TestRun_HeadFailsGetSucceeds_FallsBackToGet(t *testing.T) {
 	}
 }
 
+// Only a board registered on the strength of a name look-up carries the marker
+// that lets a later re-check deactivate it.
+func TestRun_OnlyAVerifiedCandidateCarriesTheDiscoverBoardsMarker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	targets := &fakeTargetUpserter{}
+	d := New(&fakeCompanyUpserter{}, targets, testClient(), 1, testLogger())
+	verified := validCandidate(srv.URL)
+	verified.Verified = true
+	d.Run(context.Background(), []Candidate{verified})
+	seeded := validCandidate(srv.URL)
+	seeded.ExternalBoardID = "acme-2"
+	d.Run(context.Background(), []Candidate{seeded})
+
+	if len(targets.calls) != 2 {
+		t.Fatalf("%d target upserts, want 2", len(targets.calls))
+	}
+	if got := targets.calls[0].DiscoveryMetadata["source"]; got != SourceDiscoverBoards {
+		t.Errorf("verified candidate: metadata source = %v, want %q", got, SourceDiscoverBoards)
+	}
+	if got, ok := targets.calls[1].DiscoveryMetadata["source"]; ok {
+		t.Errorf("probed candidate: metadata source = %v, want none", got)
+	}
+}
+
 func TestRun_BothHeadAndGetFail_NotPersisted(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

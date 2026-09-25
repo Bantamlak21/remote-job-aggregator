@@ -307,3 +307,41 @@ func (s *Store) NamesWithSourceAndBoard(ctx context.Context, sourceProviders, bo
 	}
 	return names, rows.Err()
 }
+
+const jobTitlesByCompanyQuery = `
+	SELECT lower(c.name), j.title
+	FROM jobs j
+	JOIN companies c ON c.id = j.company_id
+	WHERE j.source = ANY($1) AND lower(c.name) = ANY($2)
+	GROUP BY lower(c.name), j.title
+	ORDER BY lower(c.name), j.title`
+
+// maxTitlesPerCompany bounds what JobTitlesByCompany returns for one company.
+const maxTitlesPerCompany = 500
+
+// JobTitlesByCompany returns, for each named company (keyed by its lower-cased
+// name), the distinct titles of the jobs the given sources (job boards) hold
+// for it, open or not. Discovery compares them with the titles on a candidate
+// ATS board: a same-named company's board lists other jobs.
+func (s *Store) JobTitlesByCompany(ctx context.Context, sources, names []string) (map[string][]string, error) {
+	lower := make([]string, len(names))
+	for i, n := range names {
+		lower[i] = strings.ToLower(strings.TrimSpace(n))
+	}
+	rows, err := s.pool.Query(ctx, jobTitlesByCompanyQuery, sources, lower)
+	if err != nil {
+		return nil, fmt.Errorf("company: listing job titles by company: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var name, title string
+		if err := rows.Scan(&name, &title); err != nil {
+			return nil, fmt.Errorf("company: scanning a job title: %w", err)
+		}
+		if len(out[name]) < maxTitlesPerCompany {
+			out[name] = append(out[name], title)
+		}
+	}
+	return out, rows.Err()
+}

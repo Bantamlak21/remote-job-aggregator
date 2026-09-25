@@ -29,8 +29,8 @@ aggregator discover-boards                        # the curated list, configs/re
 aggregator discover-boards my-names.txt           # or your own list, one name per line
 aggregator discover-boards - --from-boards        # every employer a job board showed that has no ATS board yet
 aggregator discover-boards --from-boards --limit=300
-aggregator discover-boards --recheck              # re-verify the boards already registered for the list's names
-aggregator discover-boards --recheck --apply      # ... and deactivate (and close the jobs of) those that no longer verify
+aggregator discover-boards --recheck              # re-look-up the boards already registered for the list's names
+aggregator discover-boards --recheck --apply      # ... and deactivate (and close the jobs of) the ones refused as another company's
 aggregator discover-boards - --from-boards --recheck --apply   # the same for boards found from employer names
 aggregator ingest                                 # then read the boards it registered
 ```
@@ -65,6 +65,12 @@ retail inventory). So the rules are strict, and everything refused is logged so 
   boards is proven by the domain.
 - **"Customer.io" keeps its ending.** Its bare-word slug `customer` is tried but never accepted on the
   name alone.
+- **For an employer a job board showed (`--from-boards`), a board proven only by name must also list one
+  of that employer's job titles.** The job boards' own rows for the employer are the second witness: an
+  insurer called Sentry, a "Ramp Agent" at an airline and a "Linear Accelerator Technician" all pass the
+  name rule and share no title with the software company. The whole board's titles are compared (case and
+  punctuation ignored); a board with a domain proof needs no titles. A board refused for this reason is
+  reported as "lists none of the employer's job titles".
 - Names with non-ASCII letters have no reliable slug and are not looked up. A board with no jobs is
   not registered.
 
@@ -78,22 +84,40 @@ Registered boards are worldwide targets; the market of an existing target is nev
 found from names skip the page probe that `discover` does (the ATS's own API is the proof).
 `--from-boards` reads the employers of the remote job boards from the database, so the boards feed each
 other: a company that Himalayas showed leads to its own, complete, board.
-`--recheck` runs the same look-up over boards already registered and lists the ones that no longer
-verify; with `--apply` it deactivates them and closes their jobs. A company that was not fully checked
-(a failed probe, a canceled run) is never judged.
+`--recheck` runs the same look-up over boards already registered. It changes something only on
+**positive evidence**, which is narrow on purpose. A board is deactivated (with `--apply`, and its
+jobs closed) only when all of these hold:
+
+- `discover-boards` registered it (`discovery_metadata.source = "discover-boards"`); a board a person
+  seeded is never touched;
+- the look-up found the board and it **names itself as another company's** (a Greenhouse board named
+  "Fin" for Intercom; Lever and Ashby boards do not carry a name, so no board there can be positive
+  evidence of this kind);
+- the company was fully checked (no failed probe, not left unreached).
+
+Everything else that did not verify is not evidence and is only reported: a board that does not say
+the company's name (most companies' jobs never do: Backblaze, Kinsta and Lucidworks are real and
+unproven), one that shares no job title with a job board's few listings (Toptal, JumpCloud), a slug
+that moved, a bad night. Those are logged as "left as it is" for a person to judge. Reports carry
+structured refusals and failures (company, provider, slug, kind, reason), so a company name
+containing `: ` reads back correctly.
 
 ## Measured (2026-09-25, live)
 
-- The curated list has 404 names. Under the final rules the first pass over it, a re-check of the
-  boards the first, looser pass had registered (42 of 179 did not verify and were deactivated,
-  including the 6 known to be another company's; about half were everyday-word names that now need a
-  domain), and a second pass (22 new boards, mostly big Ashby boards that a 1 MB read limit had
-  hidden before) left **199 companies with an active board** (107 Greenhouse, 77 Ashby, 15 Lever;
-  31 more boards are registered but inactive).
-- `--from-boards --limit=300` found 42 boards among the employers the remote job boards showed;
-  4 of the 59 boards found that way did not re-verify and were deactivated.
-- Ingesting all three ATSs took about 40 seconds for 199 targets. The worldwide list then held
-  15,749 open jobs from 814 companies: 5,247 classified remote, 3,996 posted in the last 15 days.
+- The curated list has 404 names. Under the final rules, after the looser first pass was re-checked
+  (42 of 179 boards deactivated, including the 6 known to be another company's), the list gives
+  **210 companies with an active board** (111 Greenhouse, 84 Ashby, 15 Lever; 30 more boards are
+  registered but inactive). Ten names got a domain (Buffer, Intercom, Mux, Thinkific, Chime, Nord
+  Security, Doppler, Clerk, Outschool, Yugabyte): each was accepted only because its live board's job
+  text carries the domain. Nine more domain guesses (HubSpot, Fly.io, Backblaze, Remofirst, Aha, Kinsta,
+  Lucidworks, Tinybird, Lightspeed) were not found in any job of their boards and were left out of the
+  list, so those boards stay unregistered until a domain their jobs do carry is found.
+- `--from-boards` found boards among the employers the remote job boards showed. Requiring a shared job
+  title also flagged the one wrong board among them (Anagram, a crypto research firm, taken for the
+  security-training company a job board showed); it was deactivated by hand. Four real boards (Coalfire,
+  Elsevier, JumpCloud, Toptal) share no title with the few listings a job board has and are left active.
+- Ingesting the ATSs took about a minute for 111 Greenhouse targets. The worldwide list then held
+  15,954 open jobs from 818 companies: 5,262 classified remote, 4,017 posted in the last 15 days.
 
 ## Limits
 
@@ -106,8 +130,12 @@ verify; with `--apply` it deactivates them and closes their jobs. A company that
   verify).
 - **Lever's EU region** (`api.eu.lever.co`) is not read.
 - **Identity is proven, not certain.** A different company that writes the same name in most of its
-  jobs (and is not an everyday word) would pass the name rule; a domain in the list is the fix. The
-  measured precision is on 15 boards.
+  jobs (and is not an everyday word) passes the name rule; for an employer a job board showed, the
+  shared-title check catches it only when that job board's titles are on the board. A domain in the list
+  is the fix. Measured precision is on 15 real boards plus synthetic look-alikes
+  (`TestGuess_ANameProvenBoardMustListATitleTheEmployerListed`).
+- **The title check costs recall.** An employer with one or two listings on a job board can have a real
+  ATS board that shares none of them; it is then not registered (and never deactivated on that ground).
 - **The 44 ATS jobs (of about 15,700) that repeat a title a job board already stores** for the same
   company are not merged: the board copies are skipped in a run, not closed when an ATS copy arrives.
 - **Most jobs on a company board are not remote.** `remote_type` says which are (Greenhouse only
