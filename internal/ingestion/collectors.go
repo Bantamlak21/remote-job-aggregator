@@ -37,6 +37,22 @@ type PriorityRouter interface {
 	PriorityProvider() string
 }
 
+// IntervalCollector is an optional interface for a Collector whose source
+// limits how often it may be called. The ingester skips such a collector when
+// it ran less than MinInterval ago (see RunLog), unless forced.
+type IntervalCollector interface {
+	MinInterval() time.Duration
+}
+
+// RunLog remembers when each collector last ran, so MinInterval holds across
+// separate ingest processes.
+type RunLog interface {
+	// LastRun returns when the named collector last ran; ok is false if never.
+	LastRun(ctx context.Context, name string) (at time.Time, ok bool, err error)
+	// RecordRun records that the named collector ran at at.
+	RecordRun(ctx context.Context, name string, at time.Time) error
+}
+
 // EmployerResolver maps an employer name from a job site to a known
 // company. canonical is the name the company row should carry; priority
 // reports whether the company is on the priority list. A nil resolver
@@ -59,7 +75,15 @@ type CollectorConfig struct {
 	// its own targets carry, to the collector.
 	Collectors map[string]Collector
 	Registrar  TargetRegistrar
-	Resolver   EmployerResolver
+	// Resolver maps employer names from Ethiopian sources to priority
+	// companies; WorldwideResolver does the same for worldwide sources and
+	// should know only the companies that hire outside Ethiopia. A name that
+	// matches an Ethiopian-only priority company on a worldwide board is some
+	// other company that happens to share the name. Nil means no resolution.
+	Resolver          EmployerResolver
+	WorldwideResolver EmployerResolver
+	// RunLog, when set, enforces IntervalCollector limits across processes.
+	RunLog RunLog
 	// Targets lists active targets without any provider filter. After a
 	// run it is used to age out the jobs of employers that did not appear
 	// in the run at all.
@@ -69,6 +93,13 @@ type CollectorConfig struct {
 // WithCollectors registers collectors and returns the Ingester.
 func (in *Ingester) WithCollectors(cfg CollectorConfig) *Ingester {
 	in.collectors = cfg
+	return in
+}
+
+// WithForce makes RunCollectors ignore IntervalCollector limits. Use it only
+// when you know the source can take the extra request.
+func (in *Ingester) WithForce(force bool) *Ingester {
+	in.forceCollectors = force
 	return in
 }
 
@@ -125,9 +156,19 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 			Err: fmt.Errorf("ingestion: collector %s: %w", name, err)}}
 	}
 
+	if skip := in.tooSoon(ctx, name, col); skip {
+		return nil
+	}
+
 	jobs, err := col.Collect(ctx)
+	var partial []Result
 	if err != nil {
-		return failed(err)
+		if !errors.Is(err, ats.ErrPartialResult) || len(jobs) == 0 {
+			return failed(err)
+		}
+		// The collector read part of its source and then failed: store what it
+		// has, and still report the failure.
+		partial = failed(err)
 	}
 	staleAfter := col.StaleAfter()
 	if staleAfter <= 0 {
@@ -161,8 +202,12 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 			continue
 		}
 		canonical, priority := employer, false
-		if cfg.Resolver != nil {
-			if c, p := cfg.Resolver.Resolve(employer); c != "" {
+		resolver := cfg.Resolver
+		if colMarket == market.Worldwide {
+			resolver = cfg.WorldwideResolver
+		}
+		if resolver != nil {
+			if c, p := resolver.Resolve(employer); c != "" {
 				canonical, priority = c, p
 			}
 		}
@@ -186,10 +231,18 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 			return append(results, Result{Target: company.TargetCompany{ATSProvider: name, ExternalBoardID: "(collector)"}, Err: err})
 		}
 		g := groups[key]
+		// Openings are compared within one market: an Ethiopian and a worldwide
+		// listing of the same title at the same employer are different jobs
+		// in different lists.
+		dedupeMarket := colMarket
+		if dedupeMarket == "" {
+			dedupeMarket = market.Worldwide
+		}
 		provider, mk := name, colMarket
 		if g.priority && priorityProvider != "" {
 			// The priority provider's targets are the Ethiopian priority list's.
 			provider, mk = priorityProvider, market.Ethiopia
+			dedupeMarket = market.Ethiopia
 		}
 
 		// Drop openings an earlier collector already stored this run.
@@ -199,7 +252,7 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 				fresh = append(fresh, aj)
 				continue
 			}
-			if openingStored(stored, key, aj) {
+			if openingStored(stored, dedupeMarket, key, aj) {
 				continue
 			}
 			fresh = append(fresh, aj)
@@ -226,12 +279,12 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 		}
 		touched[target.ID] = true
 
-		r := in.persist(ctx, target, fresh, staleAfter)
+		r := in.persist(ctx, target, fresh, staleAfter, true)
 		results = append(results, r)
 		if r.Err == nil {
 			for _, aj := range fresh {
 				if !aj.Closed && r.stored[aj.ExternalID] {
-					k := key + "|" + companymatch.TitleKey(aj.Title)
+					k := openingKey(dedupeMarket, key, aj)
 					stored[k] = append(stored[k], aj.LocationRaw)
 				}
 			}
@@ -244,14 +297,57 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 	if cfg.Targets != nil {
 		results = append(results, in.sweepAbsent(ctx, name, staleAfter, touched)...)
 	}
-	return results
+	return append(partial, results...)
 }
 
-// openingStored reports whether an opening at the same employer, with the
-// same title and place, was already written this run.
-func openingStored(stored map[string][]string, employerKey string, aj ats.Job) bool {
-	for _, loc := range stored[employerKey+"|"+companymatch.TitleKey(aj.Title)] {
-		if companymatch.SamePlace(loc, aj.LocationRaw) {
+// tooSoon reports whether the collector must be skipped because its source
+// limits how often it may be called and it ran too recently. It records the
+// run when it lets one through (an attempt counts: the request was made
+// whether or not it succeeded).
+func (in *Ingester) tooSoon(ctx context.Context, name string, col Collector) bool {
+	ic, ok := col.(IntervalCollector)
+	rl := in.collectors.RunLog
+	if !ok || rl == nil || ic.MinInterval() <= 0 {
+		return false
+	}
+	now := in.now()
+	if !in.forceCollectors {
+		last, seen, err := rl.LastRun(ctx, name)
+		if err != nil {
+			// Not knowing is not permission: this source asks to be called
+			// rarely, so skip rather than risk being blocked.
+			in.logger.Warn("ingestion: skipping a rate-limited collector because its last run could not be read",
+				"collector", name, "error", err)
+			return true
+		}
+		if seen && now.Sub(last) < ic.MinInterval() {
+			in.logger.Info("ingestion: skipping a collector that ran recently (use --force to override)",
+				"collector", name, "last_run", last, "min_interval", ic.MinInterval())
+			return true
+		}
+	}
+	if err := rl.RecordRun(ctx, name, now); err != nil {
+		in.logger.Warn("ingestion: skipping a rate-limited collector because its run could not be recorded",
+			"collector", name, "error", err)
+		return true
+	}
+	return false
+}
+
+// openingKey identifies an opening within a market: employer and title.
+func openingKey(mk market.Market, employerKey string, aj ats.Job) string {
+	return string(mk) + "|" + employerKey + "|" + companymatch.TitleKey(aj.Title)
+}
+
+// openingStored reports whether an opening at the same employer and with the
+// same title was already written this run in the same market. In the
+// Ethiopian market the place must match too (the same title in Addis Ababa and
+// Hawassa is two jobs); in the worldwide market every listing is remote and
+// each board words the region its own way ("USA", "United States"), so the
+// place is ignored.
+func openingStored(stored map[string][]string, mk market.Market, employerKey string, aj ats.Job) bool {
+	for _, loc := range stored[openingKey(mk, employerKey, aj)] {
+		if mk == market.Worldwide || companymatch.SamePlace(loc, aj.LocationRaw) {
 			return true
 		}
 	}

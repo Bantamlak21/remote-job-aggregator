@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -24,21 +25,26 @@ type WeWorkRemotely struct {
 
 // NewWeWorkRemotely returns a We Work Remotely collector.
 func NewWeWorkRemotely(doer Doer, logger *slog.Logger) *WeWorkRemotely {
-	return &WeWorkRemotely{board: newBoard("weworkremotely", doer, logger), url: "https://weworkremotely.com/remote-jobs.rss"}
+	return &WeWorkRemotely{
+		board: newBoard("weworkremotely", []string{"weworkremotely.com"}, time.Hour, doer, logger),
+		url:   "https://weworkremotely.com/remote-jobs.rss",
+	}
+}
+
+type wwrItem struct {
+	Title       string `xml:"title"`
+	Region      string `xml:"region"`
+	Country     string `xml:"country"`
+	Type        string `xml:"type"`
+	Description string `xml:"description"`
+	PubDate     string `xml:"pubDate"`
+	ExpiresAt   string `xml:"expires_at"`
+	GUID        string `xml:"guid"`
+	Link        string `xml:"link"`
 }
 
 type wwrFeed struct {
-	Items []struct {
-		Title       string `xml:"title"`
-		Region      string `xml:"region"`
-		Country     string `xml:"country"`
-		Type        string `xml:"type"`
-		Description string `xml:"description"`
-		PubDate     string `xml:"pubDate"`
-		ExpiresAt   string `xml:"expires_at"`
-		GUID        string `xml:"guid"`
-		Link        string `xml:"link"`
-	} `xml:"channel>item"`
+	Items []wwrItem `xml:"channel>item"`
 }
 
 // stripFlags removes regional-indicator symbols (the flag emoji halves) and
@@ -53,18 +59,23 @@ func stripFlags(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// wwrDate parses the RSS date forms the feed uses.
-func wwrDate(s string) time.Time {
-	s = strings.TrimSpace(s)
-	for _, layout := range []string{time.RFC1123Z, time.RFC1123, time.RFC822Z, time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC()
-		}
+// wwrID is the slug of the item's own listing page: /remote-jobs/<slug>. The
+// query string and fragment are not part of the identity; "" for any other
+// path.
+func wwrID(link string) string {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return ""
 	}
-	return time.Time{}
+	slug, ok := strings.CutPrefix(u.Path, "/remote-jobs/")
+	if !ok || slug == "" || strings.Contains(slug, "/") {
+		return ""
+	}
+	return slug
 }
 
-// Collect returns the jobs in the feed. A title reads "Company: Job title".
+// Collect returns the jobs in the feed. A title reads "Company: Job title";
+// it is split at the first ": ".
 func (w *WeWorkRemotely) Collect(ctx context.Context) ([]ats.Job, error) {
 	body, err := w.get(ctx, w.url)
 	if err != nil {
@@ -76,49 +87,37 @@ func (w *WeWorkRemotely) Collect(ctx context.Context) ([]ats.Job, error) {
 	if err := dec.Decode(&feed); err != nil {
 		return nil, fmt.Errorf("weworkremotely: response is not the expected RSS: %w", err)
 	}
-	if len(feed.Items) == 0 {
-		return nil, errNoJobs("weworkremotely")
-	}
-	now := w.now()
-	var jobs []ats.Job
+	t := w.newTally()
 	for _, it := range feed.Items {
 		employer, title, ok := strings.Cut(it.Title, ": ")
 		if !ok {
-			continue // not "Company: Title": the employer cannot be told from the title
+			t.addBroken() // not "Company: Title": the employer cannot be told from the title
+			continue
 		}
 		link := strings.TrimSpace(it.Link)
 		if link == "" {
 			link = strings.TrimSpace(it.GUID)
 		}
-		// The site's own listing is the identity: its slug is unique and stable.
-		_, id, _ := strings.Cut(link, "/remote-jobs/")
-		if strings.ContainsAny(id, "/?# ") {
-			id = ""
-		}
-		expires := wwrDate(it.ExpiresAt)
-		if !expires.IsZero() && !expires.After(now) {
-			continue
-		}
+		published, expires := parseTime(it.PubDate), parseTime(it.ExpiresAt)
 		// The listing names the countries candidates may be in ("<flag> Barbados
 		// and <flag> United States of America"); without any, its region.
 		location := stripFlags(it.Country)
 		if location == "" {
 			location = strings.TrimSpace(it.Region)
 		}
-		job := finish(ats.Job{
-			ExternalID:     id,
+		// The item's expiry rides on ExpiresAt: judge drops an expired item,
+		// and the ingester hides a stored one once the date passes.
+		t.add(finish(ats.Job{
+			ExternalID:     wwrID(link),
 			Title:          title,
 			URL:            link,
 			Employer:       employer,
 			LocationRaw:    location,
 			Description:    ats.HTMLToText(it.Description),
-			PublishedAt:    wwrDate(it.PubDate),
+			PublishedAt:    published,
 			ExpiresAt:      expires,
 			EmploymentType: employment(it.Type),
-		})
-		if w.accept(job) {
-			jobs = append(jobs, job)
-		}
+		}), dateProblem(it.PubDate, published) || dateProblem(it.ExpiresAt, expires))
 	}
-	return dedupe(jobs), nil
+	return t.result()
 }

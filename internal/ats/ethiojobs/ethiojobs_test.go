@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
@@ -298,8 +299,8 @@ func TestCollect_ALaterPageFailingKeepsWhatWasCollected(t *testing.T) {
 		errs:  map[int]error{2: errors.New("boom")},
 	}
 	jobs, err := newCollector(f, 0).Collect(context.Background())
-	if err != nil || len(jobs) != 1 {
-		t.Errorf("jobs = %d, err = %v; want the first page's job and no error", len(jobs), err)
+	if len(jobs) != 1 || !errors.Is(err, ats.ErrPartialResult) {
+		t.Errorf("jobs = %d, err = %v; want the first page's job and a partial-result error (stored, and the failure still reported)", len(jobs), err)
 	}
 }
 

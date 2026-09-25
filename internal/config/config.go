@@ -376,7 +376,7 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("ETHIOJOBS_MAX_PAGES must be between 1 and 200, got %d", ethiojobsMaxPages))
 	}
 
-	himalayasMaxPages, err := getEnvInt("HIMALAYAS_MAX_PAGES", 25)
+	himalayasMaxPages, err := getEnvInt("HIMALAYAS_MAX_PAGES", 50)
 	if err != nil {
 		errs = append(errs, err)
 	} else if himalayasMaxPages < 1 || himalayasMaxPages > 100 {

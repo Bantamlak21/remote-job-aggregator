@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
+	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 )
 
 // Jobicy reads https://jobicy.com/api/v2/remote-jobs. Its terms: credit Jobicy
@@ -21,20 +20,35 @@ type Jobicy struct {
 
 // NewJobicy returns a Jobicy collector.
 func NewJobicy(doer Doer, logger *slog.Logger) *Jobicy {
-	return &Jobicy{board: newBoard("jobicy", doer, logger), url: "https://jobicy.com/api/v2/remote-jobs?count=100"}
+	return &Jobicy{
+		board: newBoard("jobicy", []string{"jobicy.com"}, time.Hour, doer, logger),
+		url:   "https://jobicy.com/api/v2/remote-jobs?count=100",
+	}
 }
 
-type jobicyResponse struct {
-	Jobs []struct {
-		ID             json.Number `json:"id"`
-		URL            string      `json:"url"`
-		JobTitle       string      `json:"jobTitle"`
-		CompanyName    string      `json:"companyName"`
-		JobType        []string    `json:"jobType"`
-		JobGeo         string      `json:"jobGeo"`
-		JobDescription string      `json:"jobDescription"`
-		PubDate        string      `json:"pubDate"`
-	} `json:"jobs"`
+type jobicyJob struct {
+	ID             json.Number     `json:"id"`
+	URL            string          `json:"url"`
+	JobTitle       string          `json:"jobTitle"`
+	CompanyName    string          `json:"companyName"`
+	JobType        json.RawMessage `json:"jobType"` // a list of strings; tolerated as one string
+	JobGeo         string          `json:"jobGeo"`
+	JobDescription string          `json:"jobDescription"`
+	PubDate        string          `json:"pubDate"`
+}
+
+// firstString reads the first string of a JSON list of strings, or the string
+// itself, or "" for anything else.
+func firstString(raw json.RawMessage) string {
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil && len(list) > 0 {
+		return list[0]
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return ""
 }
 
 // Collect returns the newest jobs in Jobicy's feed (its API caps one call at
@@ -44,32 +58,29 @@ func (j *Jobicy) Collect(ctx context.Context) ([]ats.Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	var resp jobicyResponse
+	var resp struct {
+		Jobs []json.RawMessage `json:"jobs"`
+	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("jobicy: response is not the expected JSON: %w", err)
 	}
-	if len(resp.Jobs) == 0 {
-		return nil, errNoJobs("jobicy")
+	records, broken := decodeRecords[jobicyJob](resp.Jobs)
+	t := j.newTally()
+	for i := 0; i < broken; i++ {
+		t.addBroken()
 	}
-	var jobs []ats.Job
-	for _, r := range resp.Jobs {
-		var kind string
-		if len(r.JobType) > 0 {
-			kind = employment(r.JobType[0])
-		}
-		job := finish(ats.Job{
+	for _, r := range records {
+		published := parseTime(r.PubDate)
+		t.add(finish(ats.Job{
 			ExternalID:     r.ID.String(),
 			Title:          r.JobTitle,
-			URL:            strings.TrimSpace(r.URL),
+			URL:            r.URL,
 			Employer:       r.CompanyName,
 			LocationRaw:    r.JobGeo,
 			Description:    ats.HTMLToText(r.JobDescription),
-			PublishedAt:    page.ParseDate(r.PubDate),
-			EmploymentType: kind,
-		})
-		if j.accept(job) {
-			jobs = append(jobs, job)
-		}
+			PublishedAt:    published,
+			EmploymentType: employment(firstString(r.JobType)),
+		}), dateProblem(r.PubDate, published))
 	}
-	return dedupe(jobs), nil
+	return t.result()
 }

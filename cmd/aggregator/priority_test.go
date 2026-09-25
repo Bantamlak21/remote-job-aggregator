@@ -45,29 +45,35 @@ func TestProductToken(t *testing.T) {
 
 func TestParseIngestArgs(t *testing.T) {
 	cases := []struct {
-		args    []string
-		want    []string
-		wantErr bool
+		args      []string
+		want      []string
+		wantForce bool
+		wantErr   bool
 	}{
-		{nil, nil, false},
-		{[]string{}, nil, false},
-		{[]string{"--providers=feed"}, []string{"feed"}, false},
-		{[]string{"--providers=feed, search ,careers-site"}, []string{"feed", "search", "careers-site"}, false},
-		{[]string{"--providers=feed,,"}, []string{"feed"}, false},
-		{[]string{"--providers="}, nil, true},
-		{[]string{"--providers=,"}, nil, true},
-		{[]string{"feed"}, nil, true},
-		{[]string{"--provider=feed"}, nil, true},
-		{[]string{"--providers=feed", "extra"}, nil, true},
+		{nil, nil, false, false},
+		{[]string{}, nil, false, false},
+		{[]string{"--providers=feed"}, []string{"feed"}, false, false},
+		{[]string{"--providers=feed, search ,careers-site"}, []string{"feed", "search", "careers-site"}, false, false},
+		{[]string{"--providers=feed,,"}, []string{"feed"}, false, false},
+		{[]string{"--force"}, nil, true, false},
+		{[]string{"--providers=remotive", "--force"}, []string{"remotive"}, true, false},
+		{[]string{"--force", "--providers=remotive"}, []string{"remotive"}, true, false},
+		{[]string{"--providers="}, nil, false, true},
+		{[]string{"--providers=,"}, nil, false, true},
+		{[]string{"feed"}, nil, false, true},
+		{[]string{"--provider=feed"}, nil, false, true},
+		{[]string{"--providers=feed", "extra"}, nil, false, true},
+		{[]string{"--providers=feed", "--providers=search"}, nil, false, true},
+		{[]string{"--forced"}, nil, false, true},
 	}
 	for _, tc := range cases {
-		got, err := parseIngestArgs(tc.args)
+		got, force, err := parseIngestArgs(tc.args)
 		if (err != nil) != tc.wantErr {
 			t.Errorf("parseIngestArgs(%q) error = %v, wantErr %t", tc.args, err, tc.wantErr)
 			continue
 		}
-		if !slices.Equal(got, tc.want) {
-			t.Errorf("parseIngestArgs(%q) = %q, want %q", tc.args, got, tc.want)
+		if !slices.Equal(got, tc.want) || force != tc.wantForce {
+			t.Errorf("parseIngestArgs(%q) = %q, force %t; want %q, force %t", tc.args, got, force, tc.want, tc.wantForce)
 		}
 	}
 }
@@ -287,5 +293,20 @@ func TestChooseProviders_TheRemoteBoardsGroupIsAcceptedAndExpanded(t *testing.T)
 		if _, ok := s.collectors[b]; !ok {
 			t.Errorf("board %s has no collector", b)
 		}
+	}
+}
+
+// A worldwide board's employer only resolves to a priority company that hires
+// outside Ethiopia (Gebeya): "EthSwitch" on Remotive is some other company.
+func TestNewIngestSources_TheWorldwideResolverKnowsOnlyCompaniesThatHireOutsideEthiopia(t *testing.T) {
+	s := sourcesFor("")
+	if c, ok := s.resolver.Resolve("EthSwitch S.C."); c != "EthSwitch" || !ok {
+		t.Errorf("Ethiopian resolver on EthSwitch S.C. = %q, %v; want EthSwitch", c, ok)
+	}
+	if c, ok := s.worldwideResolver.Resolve("EthSwitch S.C."); c != "" || ok {
+		t.Errorf("worldwide resolver on EthSwitch S.C. = %q, %v; want no match", c, ok)
+	}
+	if c, ok := s.worldwideResolver.Resolve("Gebeya Inc."); c == "" || !ok {
+		t.Errorf("worldwide resolver on Gebeya Inc. = %q, %v; want a match (it hires outside Ethiopia)", c, ok)
 	}
 }

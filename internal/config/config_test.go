@@ -674,8 +674,8 @@ func TestLoad_HimalayasMaxPagesDefaultsOverridesAndValidates(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
 
 	cfg, err := Load()
-	if err != nil || cfg.Ingestion.HimalayasMaxPages != 25 {
-		t.Fatalf("default: pages = %d, err = %v; want 25", cfg.Ingestion.HimalayasMaxPages, err)
+	if err != nil || cfg.Ingestion.HimalayasMaxPages != 50 {
+		t.Fatalf("default: pages = %d, err = %v; want 50", cfg.Ingestion.HimalayasMaxPages, err)
 	}
 	t.Setenv("HIMALAYAS_MAX_PAGES", "40")
 	if cfg, err = Load(); err != nil || cfg.Ingestion.HimalayasMaxPages != 40 {

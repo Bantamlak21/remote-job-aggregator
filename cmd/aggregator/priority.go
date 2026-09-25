@@ -86,9 +86,13 @@ type ingestSources struct {
 	collectors       map[string]ingestion.Collector
 	defaultProviders []string
 	budget           *jobsearch.Budget
-	// resolver maps an employer name from a job site to a priority company;
-	// nil when the priority list could not be loaded.
-	resolver ingestion.EmployerResolver
+	// resolver maps an employer name from an Ethiopian source to a priority
+	// company; worldwideResolver does the same for worldwide sources but knows
+	// only the companies that hire outside Ethiopia (a worldwide board's
+	// "Parallel Solutions" is not necessarily the Ethiopian one). Both are nil
+	// when the priority list could not be loaded.
+	resolver          ingestion.EmployerResolver
+	worldwideResolver ingestion.EmployerResolver
 }
 
 // newIngestSources builds one client per source, all sharing one pooled
@@ -122,11 +126,16 @@ func newIngestSources(cfg *config.Config, httpClient *httpclient.Client, priorit
 	if listErr != nil {
 		logger.Warn("priority company list unavailable: priority companies are not recognized in collected jobs and the per-company search source is disabled", "error", listErr)
 	} else {
-		entries := make([]companymatch.Entry, len(list.Companies))
-		for i, e := range list.Companies {
-			entries[i] = companymatch.Entry{Name: e.Name, Aliases: e.Aliases}
+		var all, outside []companymatch.Entry
+		for _, e := range list.Companies {
+			entry := companymatch.Entry{Name: e.Name, Aliases: e.Aliases}
+			all = append(all, entry)
+			if e.HiresOutsideEthiopia {
+				outside = append(outside, entry)
+			}
 		}
-		s.resolver = companymatch.NewMatcher(entries)
+		s.resolver = companymatch.NewMatcher(all)
+		s.worldwideResolver = companymatch.NewMatcher(outside)
 	}
 
 	if !cfg.Search.Configured() {
@@ -227,29 +236,30 @@ func splitProviders(chosen []string, s ingestSources) (atsProviders, collectorNa
 	return atsProviders, collectorNames
 }
 
-// parseIngestArgs reads ingest's only option, --providers=a,b,c. nil
-// means "every available provider".
-func parseIngestArgs(args []string) ([]string, error) {
-	switch len(args) {
-	case 0:
-		return nil, nil
-	case 1:
-		list, ok := strings.CutPrefix(args[0], "--providers=")
-		if !ok {
-			break
+// parseIngestArgs reads ingest's options: --providers=a,b,c (nil means "every
+// available provider") and --force, which makes rate-limited job boards run
+// even if they ran recently.
+func parseIngestArgs(args []string) (providers []string, force bool, err error) {
+	usage := errors.New("ingest: usage: ingest [--providers=greenhouse,feed,careers-site,ethiojobs,remote-boards,search,linkedin] [--force]")
+	for _, a := range args {
+		if a == "--force" {
+			force = true
+			continue
 		}
-		var out []string
+		list, ok := strings.CutPrefix(a, "--providers=")
+		if !ok || providers != nil {
+			return nil, false, usage
+		}
 		for p := range strings.SplitSeq(list, ",") {
 			if p = strings.TrimSpace(p); p != "" {
-				out = append(out, p)
+				providers = append(providers, p)
 			}
 		}
-		if len(out) == 0 {
-			return nil, errors.New("ingest: --providers needs at least one provider name")
+		if len(providers) == 0 {
+			return nil, false, errors.New("ingest: --providers needs at least one provider name")
 		}
-		return out, nil
 	}
-	return nil, errors.New("ingest: usage: ingest [--providers=greenhouse,feed,careers-site,ethiojobs,remote-boards,search,linkedin]")
+	return providers, force, nil
 }
 
 // chooseProviders resolves the requested providers against the ones that

@@ -5,18 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
+	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 )
 
 // Remotive reads https://remotive.com/api/remote-jobs. Remotive's terms: link
 // back to the URL it gives and name Remotive as the source; do not pass its
 // jobs on to other job sites; call it a couple of times a day at most (it
 // advises 4). Its free feed is delayed by 24 hours and holds only the jobs it
-// chooses to share (19 on 2026-09-24).
+// chooses to share (19 on 2026-09-24). Publication dates carry no zone and
+// are read as UTC.
+//
+// How the project meets those terms: the job's URL is Remotive's page and the
+// UI credits Remotive; the jobs are shown on this site only, and are never put
+// into a feed, sitemap or JobPosting markup for other sites or search engines
+// to pick up; nothing is collected in exchange for showing them; and the
+// ingester leaves at least MinInterval (6 hours, so at most 4 requests a day)
+// between runs.
 type Remotive struct {
 	board
 	url string
@@ -24,7 +30,10 @@ type Remotive struct {
 
 // NewRemotive returns a Remotive collector.
 func NewRemotive(doer Doer, logger *slog.Logger) *Remotive {
-	return &Remotive{board: newBoard("remotive", doer, logger), url: "https://remotive.com/api/remote-jobs?limit=500"}
+	return &Remotive{
+		board: newBoard("remotive", []string{"remotive.com"}, 6*time.Hour, doer, logger),
+		url:   "https://remotive.com/api/remote-jobs?limit=500",
+	}
 }
 
 type remotiveJob struct {
@@ -44,39 +53,29 @@ func (r *Remotive) Collect(ctx context.Context) ([]ats.Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Records are decoded one at a time so a single odd record (an id that is
-	// not a number) costs that job, not the feed.
 	var resp struct {
 		Jobs []json.RawMessage `json:"jobs"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("remotive: response is not the expected JSON: %w", err)
 	}
-	if len(resp.Jobs) == 0 {
-		return nil, errNoJobs("remotive")
+	records, broken := decodeRecords[remotiveJob](resp.Jobs)
+	t := r.newTally()
+	for i := 0; i < broken; i++ {
+		t.addBroken()
 	}
-	var jobs []ats.Job
-	for _, raw := range resp.Jobs {
-		var j remotiveJob
-		if err := json.Unmarshal(raw, &j); err != nil {
-			continue
-		}
-		job := finish(ats.Job{
+	for _, j := range records {
+		published := parseTime(j.PublicationDate)
+		t.add(finish(ats.Job{
 			ExternalID:     j.ID.String(),
 			Title:          j.Title,
-			URL:            strings.TrimSpace(j.URL),
+			URL:            j.URL,
 			Employer:       j.CompanyName,
 			LocationRaw:    j.CandidateRequiredLocation,
 			Description:    ats.HTMLToText(j.Description),
-			PublishedAt:    page.ParseDate(j.PublicationDate), // UTC, no zone in the feed
+			PublishedAt:    published,
 			EmploymentType: employment(j.JobType),
-		})
-		if _, err := strconv.ParseInt(j.ID.String(), 10, 64); err != nil {
-			continue // an id that is not a number is not an id
-		}
-		if r.accept(job) {
-			jobs = append(jobs, job)
-		}
+		}), dateProblem(j.PublicationDate, published))
 	}
-	return dedupe(jobs), nil
+	return t.result()
 }

@@ -115,7 +115,8 @@ type listedJob struct {
 // the last page or maxPages, and returns the jobs. Page 1 failing is an
 // error (nothing was learned, and an empty result must never be mistaken
 // for "no jobs"); a later page failing ends the run with what was already
-// collected, which is a valid, shorter sample.
+// collected together with an error wrapping ats.ErrPartialResult (a valid,
+// shorter sample that the ingester stores and still reports).
 func (c *Collector) Collect(ctx context.Context) ([]ats.Job, error) {
 	now := c.now()
 	cutoff := now.Add(-c.maxAge)
@@ -141,7 +142,8 @@ func (c *Collector) Collect(ctx context.Context) ([]ats.Job, error) {
 			}
 			c.logger.Warn("ethiojobs: stopping at a page that failed; keeping the jobs already collected",
 				"page", n, "collected", len(jobs), "error", err)
-			break
+			// The jobs are a valid, shorter sample; the error says the run was cut short.
+			return jobs, fmt.Errorf("ethiojobs: stopped at page %d after %d jobs: %w", n, len(jobs), errors.Join(ats.ErrPartialResult, err))
 		}
 		if n == 1 && len(list) == 0 {
 			// A page that decodes but lists nothing is a changed site or a

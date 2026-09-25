@@ -126,6 +126,20 @@ type fakeJobUpserter struct {
 	staleClosed  int
 	staleErr     error
 	upsertErr    error
+	moves        []moveCall
+	moveErr      error
+}
+
+type moveCall struct {
+	source, id          string
+	targetID, companyID int64
+}
+
+func (f *fakeJobUpserter) MoveJob(_ context.Context, source, id string, targetID, companyID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.moves = append(f.moves, moveCall{source, id, targetID, companyID})
+	return f.moveErr
 }
 
 func (f *fakeJobUpserter) UpsertFromATS(_ context.Context, r job.Record) (job.UpsertOutcome, error) {

@@ -114,9 +114,19 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // distinguished from "content changed" without a second round trip.
 func contentHash(r Record) string {
 	h := sha256.New()
-	for _, field := range []string{r.Title, r.Description, r.ApplicationURL, r.CanonicalURL, r.LocationRaw, r.RemoteType, r.EmploymentType} {
+	for _, field := range []string{r.Title, r.Description, r.ApplicationURL, r.CanonicalURL, r.LocationRaw} {
 		h.Write([]byte(field))
 		h.Write([]byte{0})
+	}
+	// What the source says about remote and employment type counts as content
+	// only when it says something, so a job stored before these fields existed
+	// (and a source that never fills them) keeps its hash and is not reported
+	// as changed on the next run.
+	for _, field := range []string{r.RemoteType, r.EmploymentType} {
+		if field != "" {
+			h.Write([]byte(field))
+			h.Write([]byte{0})
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -335,6 +345,27 @@ func (s *Store) CloseBySourceID(ctx context.Context, targetCompanyID int64, sour
 		return 0, fmt.Errorf("job: closing ended jobs for target %d: %w", targetCompanyID, err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+const moveJobQuery = `UPDATE jobs SET target_company_id = $3, company_id = $4
+	WHERE source = $1 AND source_job_id = $2`
+
+// MoveJob re-homes the job (source, sourceJobID) under another target and
+// company. The composite foreign keys still apply: the target must belong to
+// the company and carry the same provider as the job's source, so a move can
+// never attach a job to a company that does not own its target. It exists for
+// multi-employer sources, where the board's own id is a job's identity and an
+// employer renamed on the board must not strand the job under the old name.
+// It returns ErrNotFound when no such job exists.
+func (s *Store) MoveJob(ctx context.Context, source, sourceJobID string, targetCompanyID, companyID int64) error {
+	tag, err := s.pool.Exec(ctx, moveJobQuery, strings.TrimSpace(source), strings.TrimSpace(sourceJobID), targetCompanyID, companyID)
+	if err != nil {
+		return fmt.Errorf("job: moving %s/%s to target %d: %w", source, sourceJobID, targetCompanyID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("job: moving %s/%s: %w", source, sourceJobID, ErrNotFound)
+	}
+	return nil
 }
 
 // jobColumnsForAPI is the column list List/Get select, in the order

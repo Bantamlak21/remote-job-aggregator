@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 )
 
 // WorkingNomads reads https://www.workingnomads.com/api/exposed_jobs/, the
-// feed Working Nomads publishes for exactly this use. Each job's URL is its
-// own redirect page (/job/go/<id>/), which is the link back.
+// feed Working Nomads publishes for this use. Each job's URL is its own
+// redirect page (/job/go/<id>/), which is the link back; that page sends the
+// visitor on to the application.
 type WorkingNomads struct {
 	board
 	url string
@@ -22,7 +24,10 @@ type WorkingNomads struct {
 
 // NewWorkingNomads returns a Working Nomads collector.
 func NewWorkingNomads(doer Doer, logger *slog.Logger) *WorkingNomads {
-	return &WorkingNomads{board: newBoard("workingnomads", doer, logger), url: "https://www.workingnomads.com/api/exposed_jobs/"}
+	return &WorkingNomads{
+		board: newBoard("workingnomads", []string{"workingnomads.com"}, time.Hour, doer, logger),
+		url:   "https://www.workingnomads.com/api/exposed_jobs/",
+	}
 }
 
 type workingNomadsJob struct {
@@ -34,7 +39,7 @@ type workingNomadsJob struct {
 	PubDate     string `json:"pub_date"`
 }
 
-var workingNomadsID = regexp.MustCompile(`/job/go/(\d+)/?`)
+var workingNomadsPath = regexp.MustCompile(`^/job/go/(\d+)/?$`)
 
 // Collect returns the jobs in Working Nomads' feed.
 func (w *WorkingNomads) Collect(ctx context.Context) ([]ats.Job, error) {
@@ -46,31 +51,29 @@ func (w *WorkingNomads) Collect(ctx context.Context) ([]ats.Job, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("workingnomads: response is not the expected JSON array: %w", err)
 	}
-	if len(raw) == 0 {
-		return nil, errNoJobs("workingnomads")
+	records, broken := decodeRecords[workingNomadsJob](raw)
+	t := w.newTally()
+	for i := 0; i < broken; i++ {
+		t.addBroken()
 	}
-	var jobs []ats.Job
-	for _, item := range raw {
-		var r workingNomadsJob
-		if err := json.Unmarshal(item, &r); err != nil {
-			continue
+	for _, r := range records {
+		// The id is the number in the job's own /job/go/<id>/ path.
+		id := ""
+		if u, err := url.Parse(strings.TrimSpace(r.URL)); err == nil {
+			if m := workingNomadsPath.FindStringSubmatch(u.Path); m != nil {
+				id = m[1]
+			}
 		}
-		m := workingNomadsID.FindStringSubmatch(r.URL)
-		if m == nil {
-			continue // no id in the URL: no stable identity
-		}
-		job := finish(ats.Job{
-			ExternalID:  m[1],
+		published := parseTime(r.PubDate)
+		t.add(finish(ats.Job{
+			ExternalID:  id,
 			Title:       r.Title,
-			URL:         strings.TrimSpace(r.URL),
+			URL:         r.URL,
 			Employer:    r.CompanyName,
 			LocationRaw: r.Location,
 			Description: ats.HTMLToText(r.Description),
-			PublishedAt: page.ParseDate(r.PubDate),
-		})
-		if w.accept(job) {
-			jobs = append(jobs, job)
-		}
+			PublishedAt: published,
+		}), dateProblem(r.PubDate, published))
 	}
-	return dedupe(jobs), nil
+	return t.result()
 }

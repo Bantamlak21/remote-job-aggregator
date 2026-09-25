@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
+	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
-	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
 )
 
 // RemoteOK reads https://remoteok.com/api. Its terms: link back to the job's
@@ -22,7 +21,10 @@ type RemoteOK struct {
 
 // NewRemoteOK returns a Remote OK collector.
 func NewRemoteOK(doer Doer, logger *slog.Logger) *RemoteOK {
-	return &RemoteOK{board: newBoard("remoteok", doer, logger), url: "https://remoteok.com/api"}
+	return &RemoteOK{
+		board: newBoard("remoteok", []string{"remoteok.com"}, time.Hour, doer, logger),
+		url:   "https://remoteok.com/api",
+	}
 }
 
 type remoteOKJob struct {
@@ -49,37 +51,31 @@ func (r *RemoteOK) Collect(ctx context.Context) ([]ats.Job, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("remoteok: response is not the expected JSON array: %w", err)
 	}
-
-	var jobs []ats.Job
-	listed := 0
+	t := r.newTally()
 	for _, item := range raw {
 		var j remoteOKJob
 		if err := json.Unmarshal(item, &j); err != nil {
-			continue // one odd record costs that job only
-		}
-		if j.Legal != "" {
+			t.addBroken()
 			continue
 		}
-		listed++
-		published := epoch(j.Epoch)
-		if published.IsZero() {
-			published = page.ParseDate(j.Date)
+		if j.Legal != "" {
+			continue // the API's terms notice, not a job
 		}
-		job := finish(ats.Job{
+		published := epoch(j.Epoch)
+		bad := false
+		if published.IsZero() {
+			published = parseTime(j.Date)
+			bad = dateProblem(j.Date, published)
+		}
+		t.add(finish(ats.Job{
 			ExternalID:  j.ID,
 			Title:       j.Position,
-			URL:         strings.TrimSpace(j.URL),
+			URL:         j.URL,
 			Employer:    j.Company,
 			LocationRaw: j.Location,
 			Description: ats.HTMLToText(j.Description),
 			PublishedAt: published,
-		})
-		if r.accept(job) {
-			jobs = append(jobs, job)
-		}
+		}), bad)
 	}
-	if listed == 0 {
-		return nil, errNoJobs("remoteok")
-	}
-	return dedupe(jobs), nil
+	return t.result()
 }

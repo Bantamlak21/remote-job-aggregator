@@ -3,6 +3,7 @@ package remoteboards
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -14,9 +15,10 @@ import (
 
 const (
 	// DefaultHimalayasPages is how many pages (20 jobs each) one run reads at
-	// most. The feed holds about 100,000 jobs, newest first; a run stops as
-	// soon as it passes the age window, and this caps the rest.
-	DefaultHimalayasPages = 25
+	// most. The feed holds about 100,000 jobs, newest first. Measured on
+	// 2026-09-25: 50 pages (1,000 jobs) reached back about 28 hours, so runs
+	// 12 hours apart (the MinInterval) leave no gap.
+	DefaultHimalayasPages = 50
 	// hardHimalayasPages is the most pages one run may ever read.
 	hardHimalayasPages = 100
 	himalayasPageSize  = 20 // the API's maximum
@@ -40,33 +42,56 @@ func NewHimalayas(doer Doer, maxPages int, pause time.Duration, logger *slog.Log
 	if maxPages <= 0 {
 		maxPages = DefaultHimalayasPages
 	}
-	return &Himalayas{board: newBoard("himalayas", doer, logger), url: "https://himalayas.app/jobs/api",
-		maxPages: min(maxPages, hardHimalayasPages), pause: pause}
+	return &Himalayas{
+		board:    newBoard("himalayas", []string{"himalayas.app"}, 12*time.Hour, doer, logger),
+		url:      "https://himalayas.app/jobs/api",
+		maxPages: min(maxPages, hardHimalayasPages),
+		pause:    pause,
+	}
+}
+
+type himalayasJob struct {
+	Title                string          `json:"title"`
+	CompanyName          string          `json:"companyName"`
+	EmploymentType       string          `json:"employmentType"`
+	LocationRestrictions json.RawMessage `json:"locationRestrictions"` // a list of country names
+	PubDate              json.Number     `json:"pubDate"`
+	ExpiryDate           json.Number     `json:"expiryDate"`
+	ApplicationLink      string          `json:"applicationLink"`
+	GUID                 string          `json:"guid"`
+	Description          string          `json:"description"`
+	Excerpt              string          `json:"excerpt"`
 }
 
 type himalayasPage struct {
-	NextCursor string `json:"nextCursor"`
-	Jobs       []struct {
-		Title                string      `json:"title"`
-		CompanyName          string      `json:"companyName"`
-		EmploymentType       string      `json:"employmentType"`
-		LocationRestrictions []string    `json:"locationRestrictions"`
-		PubDate              json.Number `json:"pubDate"`
-		ExpiryDate           json.Number `json:"expiryDate"`
-		ApplicationLink      string      `json:"applicationLink"`
-		GUID                 string      `json:"guid"`
-		Description          string      `json:"description"`
-		Excerpt              string      `json:"excerpt"`
-	} `json:"jobs"`
+	NextCursor string            `json:"nextCursor"`
+	Jobs       []json.RawMessage `json:"jobs"`
 }
 
-// Collect reads pages newest first until a job passes the age window, the
-// feed ends, or maxPages is reached. Page 1 failing is an error; a later page
-// failing (including a rate limit) ends the run with what was collected.
+// restrictions reads the location restriction list ("" for none).
+func restrictions(raw json.RawMessage) string {
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return strings.Join(list, ", ")
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return ""
+}
+
+// Collect reads pages newest first until a whole page lies outside the age
+// window, the feed ends, or maxPages is reached. Page 1 failing is an error. A
+// later page failing (a rate limit, say) ends the run and returns the jobs
+// collected so far together with an error wrapping ats.ErrPartialResult, so
+// the ingester stores them and still reports the failure.
 func (h *Himalayas) Collect(ctx context.Context) ([]ats.Job, error) {
 	cutoff := h.cutoff()
-	var jobs []ats.Job
+	t := h.newTally()
 	cursor := ""
+	var oldest time.Time
+	pages := 0
 	for n := 1; n <= h.maxPages; n++ {
 		if n > 1 && h.pause > 0 {
 			select {
@@ -79,69 +104,96 @@ func (h *Himalayas) Collect(ctx context.Context) ([]ats.Job, error) {
 		if cursor != "" {
 			u += "&cursor=" + url.QueryEscape(cursor)
 		}
-		body, err := h.get(ctx, u)
-		if err == nil {
-			var pg himalayasPage
-			if err = json.Unmarshal(body, &pg); err != nil {
-				err = fmt.Errorf("himalayas: page %d is not the expected JSON: %w", n, err)
-			} else if n == 1 && len(pg.Jobs) == 0 {
-				err = errNoJobs("himalayas")
-			} else {
-				pastWindow := len(pg.Jobs) == 0
-				for _, j := range pg.Jobs {
-					var pub, exp int64
-					pub, _ = j.PubDate.Int64()
-					exp, _ = j.ExpiryDate.Int64()
-					if p := epoch(pub); !p.IsZero() && p.Before(cutoff) {
-						pastWindow = true
-						continue
-					}
-					id := strings.TrimPrefix(strings.TrimSpace(j.GUID), "https://himalayas.app/")
-					link := strings.TrimSpace(j.ApplicationLink)
-					if link == "" {
-						link = strings.TrimSpace(j.GUID)
-					}
-					location := "Worldwide"
-					if len(j.LocationRestrictions) > 0 {
-						location = strings.Join(j.LocationRestrictions, ", ")
-					}
-					description := j.Description
-					if description == "" {
-						description = j.Excerpt
-					}
-					job := finish(ats.Job{
-						ExternalID:     id,
-						Title:          j.Title,
-						URL:            link,
-						Employer:       j.CompanyName,
-						LocationRaw:    location,
-						Description:    ats.HTMLToText(description),
-						PublishedAt:    epoch(pub),
-						ExpiresAt:      epoch(exp),
-						EmploymentType: employment(j.EmploymentType),
-					})
-					if h.accept(job) {
-						jobs = append(jobs, job)
-					}
-				}
-				if pastWindow || pg.NextCursor == "" {
-					return dedupe(jobs), nil
-				}
-				cursor = pg.NextCursor
-				continue
+		pg, err := h.page(ctx, u, n)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
+			if n == 1 {
+				return nil, err
+			}
+			jobs, rerr := t.result()
+			if rerr != nil {
+				return nil, err
+			}
+			h.logger.Warn("himalayas: stopped at a page that failed; keeping the jobs already collected",
+				"page", n, "collected", len(jobs), "error", err)
+			return jobs, fmt.Errorf("himalayas: stopped at page %d after %d jobs: %w", n, len(jobs), errors.Join(ats.ErrPartialResult, err))
 		}
-		// A failure. The first page failing is the run's failure; later, keep
-		// what was collected.
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		pages++
+
+		records, broken := decodeRecords[himalayasJob](pg.Jobs)
+		for i := 0; i < broken; i++ {
+			t.addBroken()
 		}
-		if n == 1 {
-			return nil, err
+		inWindow := 0
+		for _, j := range records {
+			pub, _ := j.PubDate.Int64()
+			exp, _ := j.ExpiryDate.Int64()
+			published := epoch(pub)
+			if !published.IsZero() {
+				if oldest.IsZero() || published.Before(oldest) {
+					oldest = published
+				}
+				if !published.Before(cutoff) {
+					inWindow++
+				}
+			} else {
+				inWindow++ // an unknown date cannot end the run
+			}
+			// The listing's own page is the link back; the application link
+			// is only a fallback, and judge refuses any other host.
+			link := strings.TrimSpace(j.GUID)
+			if link == "" {
+				link = strings.TrimSpace(j.ApplicationLink)
+			}
+			location := restrictions(j.LocationRestrictions)
+			if location == "" {
+				location = "Worldwide"
+			}
+			description := j.Description
+			if description == "" {
+				description = j.Excerpt
+			}
+			t.add(finish(ats.Job{
+				ExternalID:     strings.TrimPrefix(link, "https://himalayas.app/"),
+				Title:          j.Title,
+				URL:            link,
+				Employer:       j.CompanyName,
+				LocationRaw:    location,
+				Description:    ats.HTMLToText(description),
+				PublishedAt:    published,
+				ExpiresAt:      epoch(exp),
+				EmploymentType: employment(j.EmploymentType),
+			}), false)
 		}
-		h.logger.Warn("himalayas: stopping at a page that failed; keeping the jobs already collected",
-			"page", n, "collected", len(jobs), "error", err)
-		break
+		// Stop when the whole page is outside the window (a page can mix ages:
+		// the cursor is by creation time, the dates by publication), or the
+		// feed ends.
+		if len(records) > 0 && inWindow == 0 || pg.NextCursor == "" || len(pg.Jobs) == 0 {
+			break
+		}
+		cursor = pg.NextCursor
 	}
-	return dedupe(jobs), nil
+	jobs, err := t.result()
+	if err == nil {
+		h.logger.Info("himalayas: read", "pages", pages, "jobs", len(jobs), "oldest_published", oldest)
+	}
+	return jobs, err
+}
+
+// page fetches and decodes one page. Page 1 with no jobs is an error.
+func (h *Himalayas) page(ctx context.Context, u string, n int) (himalayasPage, error) {
+	body, err := h.get(ctx, u)
+	if err != nil {
+		return himalayasPage{}, err
+	}
+	var pg himalayasPage
+	if err := json.Unmarshal(body, &pg); err != nil {
+		return himalayasPage{}, fmt.Errorf("himalayas: page %d is not the expected JSON: %w", n, err)
+	}
+	if n == 1 && len(pg.Jobs) == 0 {
+		return himalayasPage{}, errNoJobs("himalayas")
+	}
+	return pg, nil
 }

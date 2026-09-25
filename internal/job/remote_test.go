@@ -2,6 +2,8 @@ package job
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 )
 
@@ -35,7 +37,7 @@ func TestUpsert_SilenceKeepsTheStoredValueAndAnAnswerReplacesIt(t *testing.T) {
 	target, comp := seedTarget(t, ctx, db, "Acme", "acme")
 
 	first := baseRecord(target, comp, "j1")
-	first.RemoteType = "hybrid"
+	first.RemoteType, first.EmploymentType = "hybrid", "part_time"
 	if _, err := store.UpsertFromATS(ctx, first); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -45,19 +47,19 @@ func TestUpsert_SilenceKeepsTheStoredValueAndAnAnswerReplacesIt(t *testing.T) {
 		t.Fatalf("silent upsert: %v", err)
 	}
 	got, _ := store.Get(ctx, mustJobID(t, ctx, db, "j1"))
-	if got.RemoteType != RemoteTypeHybrid {
-		t.Errorf("remote type after a silent upsert = %q, want hybrid kept", got.RemoteType)
+	if got.RemoteType != RemoteTypeHybrid || got.EmploymentType != EmploymentTypePartTime {
+		t.Errorf("after a silent upsert: remote %q, employment %q; want hybrid and part_time kept", got.RemoteType, got.EmploymentType)
 	}
 
 	answer := baseRecord(target, comp, "j1")
-	answer.RemoteType = "remote"
+	answer.RemoteType, answer.EmploymentType = "remote", "internship"
 	out, err := store.UpsertFromATS(ctx, answer)
 	if err != nil || !out.Changed {
 		t.Fatalf("answering upsert: %+v, %v; want a change", out, err)
 	}
 	got, _ = store.Get(ctx, mustJobID(t, ctx, db, "j1"))
-	if got.RemoteType != RemoteTypeRemote {
-		t.Errorf("remote type = %q, want remote", got.RemoteType)
+	if got.RemoteType != RemoteTypeRemote || got.EmploymentType != EmploymentTypeInternship {
+		t.Errorf("remote %q, employment %q; want remote and internship", got.RemoteType, got.EmploymentType)
 	}
 }
 
@@ -80,5 +82,32 @@ func TestUpsert_ADefaultedJobIsUnknown_AndAnInvalidValueIsARejectedRecord(t *tes
 	_, err := store.UpsertFromATS(ctx, bad)
 	if err == nil || !IsRejectedRecord(err) {
 		t.Errorf("invalid remote type: err = %v, want a rejected record (skipped, not fatal)", err)
+	}
+}
+
+// A record that never fills remote or employment type must hash exactly as it
+// did before those fields existed, so existing rows are not all reported as
+// changed once.
+func TestContentHash_IgnoresRemoteAndEmploymentTypeWhenTheSourceSaysNothing(t *testing.T) {
+	base := baseRecord(1, 1, "j")
+	silent := contentHash(base)
+	said := base
+	said.RemoteType = "remote"
+	if contentHash(said) == silent {
+		t.Errorf("saying remote did not change the hash")
+	}
+	said = base
+	said.EmploymentType = "contract"
+	if contentHash(said) == silent {
+		t.Errorf("saying contract did not change the hash")
+	}
+	// The value the hash had before RemoteType and EmploymentType existed.
+	legacy := sha256.New()
+	for _, f := range []string{base.Title, base.Description, base.ApplicationURL, base.CanonicalURL, base.LocationRaw} {
+		legacy.Write([]byte(f))
+		legacy.Write([]byte{0})
+	}
+	if want := hex.EncodeToString(legacy.Sum(nil)); silent != want {
+		t.Errorf("hash of a silent record = %s, want the pre-existing hash %s", silent, want)
 	}
 }

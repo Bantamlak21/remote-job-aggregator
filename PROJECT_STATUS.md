@@ -805,7 +805,12 @@ about 440 employers in 30 s, 500 of them Himalayas. Supporting changes: `ats.Job
 `job.Record` carry `RemoteType` and `EmploymentType` (a silent source never resets a stored
 value; migration not needed, the columns existed), the API reports each job's `source`, and the
 UI credits the board ("via Remotive", "Apply on Remotive") as their terms require.
-`HIMALAYAS_MAX_PAGES` is new; `ingest --providers=remote-boards` runs them all.
+`HIMALAYAS_MAX_PAGES` (default 50) is new; `ingest --providers=remote-boards` runs them all.
+Rate terms are enforced, not left to discipline: each board has a minimum gap between runs kept
+in `collector_runs` (migration `000005`; Remotive 6 h, Himalayas 12 h, the rest 1 h; `--force`
+overrides). URLs off the board's own host, unreadable dates and all-records-unusable responses
+are refused; a Himalayas or Ethiojobs run cut short stores its jobs and still reports the failure
+(`ats.ErrPartialResult`); a renamed employer moves its job (`job.Store.MoveJob`).
 Known limit: most of these jobs are country-restricted (about 120 of 760 are open to
 "Worldwide"); eligibility filtering is Phase 4.
 

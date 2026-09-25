@@ -16,9 +16,11 @@ func TestMigration000004_AssignsTheMarketOfExistingTargets(t *testing.T) {
 	ctx := context.Background()
 	resetSchema(t, url)
 
-	// Back to the schema as of 000003.
-	if err := database.MigrateDownStep(ctx, url, migrations.FS); err != nil {
-		t.Fatalf("MigrateDownStep() failed: %v", err)
+	// Back to the schema as of 000003 (undo 000005, then 000004).
+	for range 2 {
+		if err := database.MigrateDownStep(ctx, url, migrations.FS); err != nil {
+			t.Fatalf("MigrateDownStep() failed: %v", err)
+		}
 	}
 	db, err := database.New(ctx, dbConfig(url))
 	if err != nil {

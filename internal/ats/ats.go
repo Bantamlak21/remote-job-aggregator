@@ -26,6 +26,13 @@ import (
 // package and recoupling itself to one ATS.
 var ErrBoardNotFound = errors.New("ats: board not found")
 
+// ErrPartialResult marks an error that came with usable jobs: a collector
+// that read part of its source and then failed (a later page hit a rate
+// limit) returns the jobs it has together with an error wrapping this. The
+// ingester stores those jobs and still reports the failure, so a truncated
+// run is never mistaken for a complete one.
+var ErrPartialResult = errors.New("ats: partial result")
+
 // ErrInvalidBoardToken is returned when a board token is not safe to
 // place in a request URL. Not a "board is gone" signal: the token itself
 // is malformed, so it never reaches the network.
