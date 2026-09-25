@@ -14,8 +14,8 @@ import (
 func marketFixture() *recordingRepo {
 	at := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	return &recordingRepo{jobs: []job.Job{
-		{ID: "1", Title: "Cashier", CompanyName: "Local Co", Market: market.Ethiopia, PostedAt: at, Tags: []string{}},
-		{ID: "2", Title: "Backend Engineer", CompanyName: "Global Co", Market: market.Worldwide, PostedAt: at, Tags: []string{}},
+		{ID: "1", Title: "Cashier", CompanyName: "Local Co", Market: market.Ethiopia, Source: "ethiojobs", PostedAt: at, Tags: []string{}},
+		{ID: "2", Title: "Backend Engineer", CompanyName: "Global Co", Market: market.Worldwide, Source: "remotive", PostedAt: at, Tags: []string{}},
 	}}
 }
 
@@ -70,5 +70,29 @@ func TestJobs_ReportMarketInListAndDetail(t *testing.T) {
 	}
 	if detail["market"] != "ethiopia" {
 		t.Errorf(`detail["market"] = %v, want ethiopia`, detail["market"])
+	}
+}
+
+func TestJobs_ReportTheSourceForAttribution(t *testing.T) {
+	h := testHandler(t, marketFixture())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil))
+	var list struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decoding list: %v", err)
+	}
+	if list.Jobs[0]["source"] != "ethiojobs" || list.Jobs[1]["source"] != "remotive" {
+		t.Errorf("sources = %v, %v; want ethiojobs, remotive", list.Jobs[0]["source"], list.Jobs[1]["source"])
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/2", nil))
+	var detail map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decoding detail: %v", err)
+	}
+	if detail["source"] != "remotive" {
+		t.Errorf(`detail["source"] = %v, want remotive`, detail["source"])
 	}
 }

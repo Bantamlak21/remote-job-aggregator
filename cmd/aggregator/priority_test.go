@@ -82,7 +82,10 @@ func sourcesFor(serperKey string) ingestSources {
 }
 
 // The free sources run by default; the Serper-backed ones never do.
-var freeDefaults = []string{"careers-site", "ethiojobs", "feed", "greenhouse"}
+var freeDefaults = []string{
+	"careers-site", "ethiojobs", "feed", "greenhouse",
+	"himalayas", "jobicy", "remoteok", "remotive", "weworkremotely", "workingnomads",
+}
 
 func TestNewIngestSources_WithoutASerperKeyOnlyTheFreeSourcesExist(t *testing.T) {
 	s := sourcesFor("")
@@ -186,14 +189,15 @@ func TestChooseProviders(t *testing.T) {
 
 func TestSplitProviders_SeparatesCollectorsAndOrdersThem(t *testing.T) {
 	s := sourcesFor("test-key")
-	ats, cols := splitProviders([]string{"linkedin", "feed", "search", "ethiojobs"}, s)
+	ats, cols := splitProviders([]string{"linkedin", "feed", "search", "remoteok", "ethiojobs", "himalayas"}, s)
 	if !slices.Equal(ats, []string{"feed", "search"}) {
 		t.Errorf("ATS providers = %v, want [feed search]", ats)
 	}
-	// Ethiojobs runs before LinkedIn whatever the order asked for: it is the
-	// richer source, so an opening both list is stored from it.
-	if !slices.Equal(cols, []string{"ethiojobs", "linkedin"}) {
-		t.Errorf("collectors = %v, want [ethiojobs linkedin]", cols)
+	// Ethiojobs runs before LinkedIn, and both before the remote boards
+	// (Himalayas, with the fullest text, before Remote OK), whatever the order
+	// asked for: an opening several sources list is stored from the first.
+	if !slices.Equal(cols, []string{"ethiojobs", "linkedin", "himalayas", "remoteok"}) {
+		t.Errorf("collectors = %v, want [ethiojobs linkedin himalayas remoteok]", cols)
 	}
 	ats, cols = splitProviders([]string{"feed"}, s)
 	if len(cols) != 0 || !slices.Equal(ats, []string{"feed"}) {
@@ -259,5 +263,29 @@ func TestNewIngestSources_WarnsWhenTheKeywordListCannotFitTheBudget(t *testing.T
 	}
 	if strings.Contains(buf.String(), "test-key") {
 		t.Errorf("the Serper key was logged")
+	}
+}
+
+func TestExpandGroups_RemoteBoardsNamesEveryBoardOnce(t *testing.T) {
+	got := expandGroups([]string{"feed", "remote-boards", "remotive", "ethiojobs"})
+	want := []string{"feed", "himalayas", "remotive", "jobicy", "weworkremotely", "workingnomads", "remoteok", "ethiojobs"}
+	if !slices.Equal(got, want) {
+		t.Errorf("expandGroups = %v, want %v (in place, no duplicate remotive)", got, want)
+	}
+	if got := expandGroups([]string{"feed"}); !slices.Equal(got, []string{"feed"}) {
+		t.Errorf("no group: %v", got)
+	}
+}
+
+func TestChooseProviders_TheRemoteBoardsGroupIsAcceptedAndExpanded(t *testing.T) {
+	s := sourcesFor("")
+	got, err := chooseProviders([]string{"remote-boards"}, s)
+	if err != nil || len(got) != 6 || slices.Contains(got, "remote-boards") {
+		t.Errorf("chooseProviders(remote-boards) = %v, %v; want the six boards", got, err)
+	}
+	for _, b := range got {
+		if _, ok := s.collectors[b]; !ok {
+			t.Errorf("board %s has no collector", b)
+		}
 	}
 }

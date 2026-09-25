@@ -41,6 +41,12 @@ newest first by `posted_at` (ties by id), whatever the company, and a priority j
 where it lands. `priority=true` narrows a list to just those companies. Additive change:
 existing consumers that ignore the new field and parameter see the same shapes as before.
 
+**Source and credit.** Every job reports `"source"`, the provider it was collected through:
+an employer's ATS (`greenhouse`) or a job board (`himalayas`, `remotive`, `remoteok`, `jobicy`,
+`weworkremotely`, `workingnomads`, `ethiojobs`, `linkedin`). For a job board, `application_url` is
+the board's own page for the job and the board asks to be credited; the UI prints "via <board>"
+(see `docs/remote-boards.md`). Additive.
+
 **Markets.** Every job belongs to one of two lists, reported as `"market"`: `"ethiopia"` (jobs
 in Ethiopia or from Ethiopian employers: the Ethiopian category in the UI) or `"worldwide"`
 (companies hiring across borders: the main page). The market comes from the source the job was
@@ -80,6 +86,7 @@ Response `200`:
       "company_logo_url": null,
       "is_priority": false,
       "market": "worldwide",
+      "source": "greenhouse",
       "remote_type": "remote",
       "employment_type": "full_time",
       "region_note": "Worldwide",
@@ -111,6 +118,7 @@ Response `200`:
   "company_logo_url": null,
   "is_priority": false,
   "market": "worldwide",
+  "source": "greenhouse",
   "remote_type": "remote",
   "employment_type": "full_time",
   "region_note": "Worldwide",

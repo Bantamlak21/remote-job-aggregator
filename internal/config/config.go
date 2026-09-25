@@ -187,6 +187,10 @@ type IngestionConfig struct {
 	// EthiojobsMaxPages caps how many listing pages (12 jobs each) one run
 	// of the Ethiojobs collector reads. The site has about 100.
 	EthiojobsMaxPages int
+	// HimalayasMaxPages caps how many pages (20 jobs each) one Himalayas
+	// collection reads. The feed holds about 100,000 jobs, newest first; a run
+	// stops sooner when it passes the age window.
+	HimalayasMaxPages int
 }
 
 // SearchConfig configures the Serper (google.serper.dev) search API
@@ -372,6 +376,13 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("ETHIOJOBS_MAX_PAGES must be between 1 and 200, got %d", ethiojobsMaxPages))
 	}
 
+	himalayasMaxPages, err := getEnvInt("HIMALAYAS_MAX_PAGES", 25)
+	if err != nil {
+		errs = append(errs, err)
+	} else if himalayasMaxPages < 1 || himalayasMaxPages > 100 {
+		errs = append(errs, fmt.Errorf("HIMALAYAS_MAX_PAGES must be between 1 and 100, got %d", himalayasMaxPages))
+	}
+
 	jobRepository := getEnv("JOB_REPOSITORY", JobRepositoryPostgres)
 	if jobRepository != JobRepositoryPostgres && jobRepository != JobRepositoryMock {
 		errs = append(errs, fmt.Errorf("JOB_REPOSITORY must be one of [%s %s], got %q",
@@ -441,6 +452,7 @@ func Load() (*Config, error) {
 			MaxResponseBytes:  ingestionMaxBytes,
 			Timeout:           ingestionTimeout,
 			EthiojobsMaxPages: ethiojobsMaxPages,
+			HimalayasMaxPages: himalayasMaxPages,
 		},
 		Search: SearchConfig{
 			SerperAPIKey:     serperAPIKey,

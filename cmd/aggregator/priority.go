@@ -17,6 +17,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/greenhouse"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/jobsearch"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/remoteboards"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
@@ -35,14 +36,28 @@ const (
 
 // The many-employer collectors, in the order they run: Ethiojobs first, so
 // an opening both sites list is stored with Ethiojobs' full description
-// rather than LinkedIn's search snippet. Each name is also the ats_provider
-// of the targets it creates.
+// rather than LinkedIn's search snippet; then the remote job boards, the ones
+// with the fullest text first, so an opening several boards list is stored
+// from the richest. Each name is also the ats_provider of the targets it
+// creates.
 const (
 	collectorEthiojobs = "ethiojobs"
 	collectorLinkedIn  = "linkedin"
+
+	boardHimalayas     = "himalayas"
+	boardRemotive      = "remotive"
+	boardJobicy        = "jobicy"
+	boardWWR           = "weworkremotely"
+	boardWorkingNomads = "workingnomads"
+	boardRemoteOK      = "remoteok"
+
+	// remoteBoardsGroup names every remote job board in --providers.
+	remoteBoardsGroup = "remote-boards"
 )
 
-var collectorOrder = []string{collectorEthiojobs, collectorLinkedIn}
+var remoteBoards = []string{boardHimalayas, boardRemotive, boardJobicy, boardWWR, boardWorkingNomads, boardRemoteOK}
+
+var collectorOrder = append([]string{collectorEthiojobs, collectorLinkedIn}, remoteBoards...)
 
 // listingFetchPause is the delay between successive listing-page fetches of
 // a job board.
@@ -94,6 +109,12 @@ func newIngestSources(cfg *config.Config, httpClient *httpclient.Client, priorit
 		},
 		collectors: map[string]ingestion.Collector{
 			collectorEthiojobs: ethiojobs.New(pages, cfg.Ingestion.EthiojobsMaxPages, 0, listingFetchPause, logger),
+			boardHimalayas:     remoteboards.NewHimalayas(httpClient, cfg.Ingestion.HimalayasMaxPages, listingFetchPause, logger),
+			boardRemotive:      remoteboards.NewRemotive(httpClient, logger),
+			boardJobicy:        remoteboards.NewJobicy(httpClient, logger),
+			boardWWR:           remoteboards.NewWeWorkRemotely(httpClient, logger),
+			boardWorkingNomads: remoteboards.NewWorkingNomads(httpClient, logger),
+			boardRemoteOK:      remoteboards.NewRemoteOK(httpClient, logger),
 		},
 	}
 
@@ -148,9 +169,38 @@ func newIngestSources(cfg *config.Config, httpClient *httpclient.Client, priorit
 			s.defaultProviders = append(s.defaultProviders, p)
 		}
 	}
+	// Ethiojobs and the remote job boards are free and run by default. The
+	// boards ask for few requests (Remotive: at most 4 a day; Himalayas
+	// refreshes daily), so ingest is meant to run about daily.
 	s.defaultProviders = append(s.defaultProviders, collectorEthiojobs)
+	s.defaultProviders = append(s.defaultProviders, remoteBoards...)
 	slices.Sort(s.defaultProviders)
 	return s
+}
+
+// expandGroups replaces the group name "remote-boards" with the individual
+// boards (in place, without duplicates), so --providers=remote-boards runs
+// all of them.
+func expandGroups(requested []string) []string {
+	if !slices.Contains(requested, remoteBoardsGroup) {
+		return requested
+	}
+	var out []string
+	add := func(p string) {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, p := range requested {
+		if p == remoteBoardsGroup {
+			for _, b := range remoteBoards {
+				add(b)
+			}
+			continue
+		}
+		add(p)
+	}
+	return out
 }
 
 // hasProvider reports whether name is an ATS provider or a collector.
@@ -199,7 +249,7 @@ func parseIngestArgs(args []string) ([]string, error) {
 		}
 		return out, nil
 	}
-	return nil, errors.New("ingest: usage: ingest [--providers=greenhouse,feed,careers-site,ethiojobs,search,linkedin]")
+	return nil, errors.New("ingest: usage: ingest [--providers=greenhouse,feed,careers-site,ethiojobs,remote-boards,search,linkedin]")
 }
 
 // chooseProviders resolves the requested providers against the ones that
@@ -210,6 +260,7 @@ func chooseProviders(requested []string, s ingestSources) ([]string, error) {
 	if requested == nil {
 		return s.defaultProviders, nil
 	}
+	requested = expandGroups(requested)
 	var unavailable []string
 	for _, p := range requested {
 		if !s.hasProvider(p) {

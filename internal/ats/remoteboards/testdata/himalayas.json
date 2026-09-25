@@ -1,0 +1,165 @@
+{
+ "comments": "21/08/2026: Cursor pagination is now available and is the preferred way to page through the feed. Pass the nextCursor value from each response back as ?cursor=. It is faster than offset and will never return the same job twice. The offset parameter is deprecated and will be removed in a future release. 13/03/2026: The API has been updated to include the companySlug field in the response.",
+ "updatedAt": 1790306400,
+ "offset": 0,
+ "limit": 20,
+ "totalCount": 98815,
+ "nextCursor": "MjAyNi0wOS0yNVQwMzowMjo1OC40NTEzOTJafDIyODExMzg",
+ "jobs": [
+  {
+   "title": "Bilingual Medical Scheduling & Patient Support Specialist",
+   "excerpt": "Bilingual Medical Scheduling & Patient Support Specialist Remote | Gastroenterology | Part-Time, 40 hours/week | Rate: $",
+   "companyName": "Go Lean Health",
+   "companySlug": "go-lean-health",
+   "companyLogo": "https://cdn-images.himalayas.app/7s4fheemf8zt69t9l6q36d08uyt1",
+   "employmentType": "Full Time",
+   "minSalary": 6.5,
+   "maxSalary": 6.5,
+   "salaryPeriod": "hourly",
+   "seniority": [
+    "Entry-level",
+    "Mid-level"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [
+    "Venezuela"
+   ],
+   "categories": [
+    "Patient-Coordinator",
+    "Medical-Scheduler",
+    "Healthcare-Administrative-Assistant",
+    "Patient-Support-Specialist",
+    "Medical-Administrative-Specialist",
+    "Medical-Scheduling-Specialist",
+    "Bilingual-Patient-Coordinator",
+    "Patient-Scheduling-Specialist",
+    "Bilingual-Medical-Administrative-Support",
+    "Medical-Scheduling-Coordinator",
+    "Patient-Scheduling-Representative",
+    "Patient-Scheduling-Coordinator",
+    "Bilingual-Patient-Communication-Specialist",
+    "Healthcare-Scheduling-Specialist",
+    "Bilingual-Healthcare-Coordinator"
+   ],
+   "parentCategories": [],
+   "description": "<p><strong>Bilingual Medical Scheduling &amp; Patient Support Specialist</strong><br><br>Remote | Gastroenterology | Part-Time, 40 hours/week | Rate: $6.5/hour</p><h3><strong>About the Role</strong></h3><h3>This Gastroenterology practice is looking for a highl",
+   "pubDate": 1790306400,
+   "expiryDate": 1795490399,
+   "applicationLink": "https://himalayas.app/companies/go-lean-health/jobs/bilingual-medical-scheduling-patient-support-specialist-8141598960",
+   "guid": "https://himalayas.app/companies/go-lean-health/jobs/bilingual-medical-scheduling-patient-support-specialist-8141598960"
+  },
+  {
+   "title": "Medical Biller",
+   "excerpt": "Job Opening: Medical BillerWorking Hours: US Hours (9am-5pm EST)Full-Time, Remote Work.",
+   "companyName": "ReWorks Solutions",
+   "companySlug": "reworks-solutions",
+   "companyLogo": "https://cdn-images.himalayas.app/9jsre22zsufqtazbxkwbgfloyjl3",
+   "employmentType": "Full Time",
+   "minSalary": null,
+   "maxSalary": null,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Mid-level"
+   ],
+   "currency": null,
+   "locationRestrictions": [
+    "South Africa"
+   ],
+   "categories": [
+    "Medical-Biller",
+    "Medical-Billing-Specialist",
+    "Medical-Coder",
+    "Claims-Specialist",
+    "Medical-Billing-Coder",
+    "Medical-Billing",
+    "Medical-Billing-Clerk",
+    "Medical-Billing-Representative",
+    "Medical-Billing-Assistant",
+    "Medical-Claims-Billing-Specialist",
+    "Hospital-Biller"
+   ],
+   "parentCategories": [
+    "Healthcare"
+   ],
+   "description": "<h3>Job Opening: Medical Biller</h3><h3>Working Hours: US Hours (9am-5pm EST)</h3><h3>Full-Time, Remote Work.</h3><h3>Key Responsibilities</h3><ul>\n<li>Prepare and submit medical claims to insurance companies and patients for services rendered, ensuring adhere",
+   "pubDate": 1790306284,
+   "expiryDate": 1795490283,
+   "applicationLink": "https://himalayas.app/companies/reworks-solutions/jobs/medical-biller",
+   "guid": "https://himalayas.app/companies/reworks-solutions/jobs/medical-biller"
+  },
+  {
+   "title": "Senior Revenue Operations Analyst",
+   "excerpt": "Work Authorization & Visa SponsorshipBig Happy is not offering visa sponsorship of any kind at this time, either now or ",
+   "companyName": "Big Happy",
+   "companySlug": "big-happy",
+   "companyLogo": "https://cdn-images.himalayas.app/ajrb1nqcxfg5c8aa9auenp08zo10",
+   "employmentType": "Full Time",
+   "minSalary": 70000,
+   "maxSalary": 103500,
+   "salaryPeriod": "annual",
+   "seniority": [
+    "Senior"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [
+    "United States"
+   ],
+   "categories": [
+    "Revenue-Operations-Analyst",
+    "Sales-Operations-Analyst",
+    "Business-Operations-Analyst",
+    "RevOps-Analyst",
+    "Revenue-Analyst",
+    "Senior-Revenue-Operations"
+   ],
+   "parentCategories": [
+    "Sales"
+   ],
+   "description": "<div>\n<br><br><strong>Work Authorization &amp; Visa Sponsorship<strong><em><a href=\"https://himalayas.app/companies/big-happy\">Big Happy</a> is not offering visa sponsorship of any kind at this time, either now or in the future. Only candidates who are current",
+   "pubDate": 1790306266,
+   "expiryDate": 1795490265,
+   "applicationLink": "https://himalayas.app/companies/big-happy/jobs/senior-revenue-operations-analyst",
+   "guid": "https://himalayas.app/companies/big-happy/jobs/senior-revenue-operations-analyst"
+  },
+  {
+   "title": "Operations Trainer",
+   "excerpt": "Do you believe no challenge is too complex to solve?",
+   "companyName": "U.S. Engineering",
+   "companySlug": "u-s-engineering",
+   "companyLogo": "https://cdn-images.himalayas.app/wdoijel9hxq6ppt9b7zipc5xefjb",
+   "employmentType": "Full Time",
+   "minSalary": 25,
+   "maxSalary": 35,
+   "salaryPeriod": "hourly",
+   "seniority": [
+    "Mid-level"
+   ],
+   "currency": "USD",
+   "locationRestrictions": [
+    "United States"
+   ],
+   "categories": [
+    "Operations-Trainer",
+    "Training-Manager",
+    "Learning-And-Development-Specialist",
+    "Corporate-Trainer",
+    "Talent-Development",
+    "Operational-Trainer",
+    "Operations-Training",
+    "Operations-Training-Specialist",
+    "Operations-Training-Coordinator",
+    "Training-Operations",
+    "Warehouse-Operations-Trainer",
+    "Operations"
+   ],
+   "parentCategories": [
+    "Operations"
+   ],
+   "description": "Do you believe no challenge is too complex to solve? You’ll fit right in at <a href=\"https://himalayas.app/companies/u-s-engineering\">U.S. Engineering</a>. We deliver award-winning mechanical contracting, construction, service, and maintenance solutions with a",
+   "pubDate": 1790306237,
+   "expiryDate": 1795490237,
+   "applicationLink": "https://himalayas.app/companies/u-s-engineering/jobs/operations-trainer",
+   "guid": "https://himalayas.app/companies/u-s-engineering/jobs/operations-trainer"
+  }
+ ]
+}

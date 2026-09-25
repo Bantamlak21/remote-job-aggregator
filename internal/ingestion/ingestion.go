@@ -306,6 +306,7 @@ func (in *Ingester) persist(ctx context.Context, t company.TargetCompany, atsJob
 			// duplicated URL abort a whole board's ingestion forever.
 			Title: aj.Title, Description: aj.Description,
 			ApplicationURL: aj.URL, LocationRaw: aj.LocationRaw, PublishedAt: aj.PublishedAt, ExpiresAt: aj.ExpiresAt,
+			RemoteType: aj.RemoteType, EmploymentType: aj.EmploymentType,
 		})
 		if err != nil {
 			// A job the database refused (bad data) is skipped and logged;

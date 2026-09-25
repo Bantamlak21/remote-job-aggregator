@@ -86,6 +86,9 @@ type Job struct {
 	// Ethiopian tech companies list): the UI badges them and List can
 	// filter to them. It does not change sort order (recency only).
 	IsPriority bool
+	// Source is the ats_provider the job was collected through ("greenhouse",
+	// "remotive", "ethiojobs", ...). The UI credits job boards with it.
+	Source string
 	// Market is the list the job belongs to: Ethiopia or Worldwide.
 	Market         market.Market
 	RemoteType     RemoteType

@@ -498,3 +498,23 @@ func TestRunCollectors_TargetsAreRegisteredInTheCollectorsMarket(t *testing.T) {
 		t.Errorf("registrar calls = %+v, want %+v", reg.calls, want)
 	}
 }
+
+// What a source says about remote and employment type reaches the stored record.
+func TestRunCollectors_PassesRemoteAndEmploymentTypeToTheRecord(t *testing.T) {
+	j := mkJob("r1", "Engineer", "Acme")
+	j.RemoteType, j.EmploymentType = "remote", "contract"
+	col := &fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{j, mkJob("r2", "Cook", "Acme")}}
+	jobs := &fakeJobUpserter{}
+	in, _ := newCollectorIngester(jobs, newFakeRegistrar(), nil, nil, map[string]Collector{"remotive": col})
+
+	if _, err := in.RunCollectors(context.Background(), []string{"remotive"}); err != nil {
+		t.Fatalf("RunCollectors() error = %v", err)
+	}
+	got := map[string][2]string{}
+	for _, u := range jobs.upserts {
+		got[u.SourceJobID] = [2]string{u.RemoteType, u.EmploymentType}
+	}
+	if got["r1"] != [2]string{"remote", "contract"} || got["r2"] != [2]string{"", ""} {
+		t.Errorf("records = %v, want r1 remote/contract and r2 silent", got)
+	}
+}

@@ -1,0 +1,102 @@
+{
+ "apiVersion": "2.2.16",
+ "documentationUrl": "https://jobi.cy/apidocs",
+ "friendlyNotice": "Thanks for using Jobicy API! Please ensure Jobicy is clearly credited with a direct link to the source, and all application buttons redirect to the original job URL provided in this feed. That’s all! You might be building something amazing, we wish you the best of luck!",
+ "jobCount": 100,
+ "lastUpdate": "2026-09-24T18:46:47+00:00",
+ "appliedFilters": {
+  "count": 100
+ },
+ "jobs": [
+  {
+   "id": 154057,
+   "url": "https://jobicy.com/jobs/154057-technical-accountant",
+   "jobSlug": "154057-technical-accountant",
+   "jobTitle": "Technical Accountant",
+   "companyName": "Kalshi",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2025/06/00635b6c-221.png",
+   "jobIndustry": [
+    "Finance & Accounting"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "USA",
+   "jobLevel": "Senior",
+   "jobExcerpt": "What We're Up To Kalshi has defined a new category: prediction markets. Kalshi allows people to trade on the outcome of ",
+   "jobDescription": "<h3><strong>What We're Up To</strong></h3>\r\n<p><a href=\"https://jobicy.com/company/kalshi\" target=\"_blank\" rel=\"noopener\">Kalshi</a> has defined a new category: prediction markets. Kalshi allows people to trade on the outcome of any events and turn any questio",
+   "pubDate": "2026-09-24T18:46:47+00:00",
+   "salaryMin": 100000,
+   "salaryMax": 180000,
+   "salaryCurrency": "USD",
+   "salaryPeriod": "yearly"
+  },
+  {
+   "id": 154059,
+   "url": "https://jobicy.com/jobs/154059-enterprise-solutions-architect",
+   "jobSlug": "154059-enterprise-solutions-architect",
+   "jobTitle": "Enterprise Solutions Architect",
+   "companyName": "TripActions",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2025/06/950bf607-221.jpg",
+   "jobIndustry": [
+    "Sales"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "USA",
+   "jobLevel": "Any",
+   "jobExcerpt": "Navan is looking for a travel specialist to partner with our US Enterprise sales team. We are looking for someone who is",
+   "jobDescription": "<p>Navan is looking for a travel specialist to partner with our US Enterprise sales team. We are looking for someone who is capable of influencing prospects, building strong relationships and supporting Account Executives in the close of complex, net new deals",
+   "pubDate": "2026-09-24T18:46:46+00:00",
+   "salaryMin": 172800,
+   "salaryMax": 216000,
+   "salaryCurrency": "USD",
+   "salaryPeriod": "yearly"
+  },
+  {
+   "id": 154051,
+   "url": "https://jobicy.com/jobs/154051-staff-software-engineer-curated-data",
+   "jobSlug": "154051-staff-software-engineer-curated-data",
+   "jobTitle": "Staff Software Engineer - Curated Data",
+   "companyName": "Dune",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2025/06/9fd6085e-221.png",
+   "jobIndustry": [
+    "Software Engineering"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "Europe,  USA",
+   "jobLevel": "Senior",
+   "jobExcerpt": "About Dune Dune's mission is to make onchain finance observable. We're the industry standard for onchain data: a blockch",
+   "jobDescription": "<p><strong>About <a href=\"https://jobicy.com/company/dune\" target=\"_blank\" rel=\"noopener\">Dune</a></strong></p>\n<p>Dune's mission is to make onchain finance observable. We're the industry standard for onchain data: a blockchain data and intelligence provider t",
+   "pubDate": "2026-09-24T18:46:46+00:00"
+  },
+  {
+   "id": 154052,
+   "url": "https://jobicy.com/jobs/154052-ai-operations-lead-toast-iq",
+   "jobSlug": "154052-ai-operations-lead-toast-iq",
+   "jobTitle": "AI Operations Lead, Toast IQ",
+   "companyName": "Toast",
+   "companyLogo": "https://jobicy.com/data/server-nyc0409/galaxy/mercury/2020/12/WRILS-201210114200-563401.png",
+   "jobIndustry": [
+    "Product & Operations"
+   ],
+   "jobType": [
+    "Full-Time"
+   ],
+   "jobGeo": "USA",
+   "jobLevel": "Director",
+   "jobExcerpt": "Toast creates technology to help restaurants and local businesses succeed in a digital world, helping business owners op",
+   "jobDescription": "<p><a href=\"https://jobicy.com/company/toast\" target=\"_blank\" rel=\"noopener\">Toast</a> creates technology to help restaurants and local businesses succeed in a digital world, helping business owners operate, increase sales, engage customers, and keep employees",
+   "pubDate": "2026-09-24T18:46:45+00:00",
+   "salaryMin": 142000,
+   "salaryMax": 290000,
+   "salaryCurrency": "USD",
+   "salaryPeriod": "yearly"
+  }
+ ],
+ "statusCode": 200,
+ "success": true
+}

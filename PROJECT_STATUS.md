@@ -794,8 +794,20 @@ remote companies on the main page. Migration `000004` adds `target_companies.mar
 `?market=` filter; the frontend has `/` (worldwide) and `/ethiopia` (header tabs), and the
 "Ethiopian tech companies only" toggle exists only on the Ethiopian page. Details:
 [docs/fresh-jobs.md](docs/fresh-jobs.md#markets-ethiopian-category-and-worldwide-main-page).
-Before the worldwide sources land, the worldwide list holds only the Greenhouse boards (GitLab,
-Figma, Airbnb, Discord); everything else is Ethiopian.
+The worldwide list started with only the Greenhouse boards (GitLab, Figma, Airbnb, Discord).
+
+### Worldwide remote job boards (branch `Bantamlak21/worldwide-remote-sources-e451cddd`)
+
+Six free remote-job boards feed the worldwide list: Himalayas, Remotive, Jobicy, We Work Remotely,
+Working Nomads, Remote OK (`internal/ats/remoteboards`, one collector each; details, terms and
+limits in [docs/remote-boards.md](docs/remote-boards.md)). First live run: 760 worldwide jobs from
+about 440 employers in 30 s, 500 of them Himalayas. Supporting changes: `ats.Job` /
+`job.Record` carry `RemoteType` and `EmploymentType` (a silent source never resets a stored
+value; migration not needed, the columns existed), the API reports each job's `source`, and the
+UI credits the board ("via Remotive", "Apply on Remotive") as their terms require.
+`HIMALAYAS_MAX_PAGES` is new; `ingest --providers=remote-boards` runs them all.
+Known limit: most of these jobs are country-restricted (about 120 of 760 are open to
+"Worldwide"); eligibility filtering is Phase 4.
 
 ## 3. Work In Progress
 

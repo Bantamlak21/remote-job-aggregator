@@ -33,6 +33,11 @@ type Record struct {
 	LocationRaw     string
 	PublishedAt     time.Time // zero means unknown
 	ExpiresAt       time.Time // application deadline; zero means none known
+	// RemoteType and EmploymentType are what the source says ("" = the source
+	// does not say: a new row is "unknown", an existing value is kept, so a
+	// later classification is never reset by a source that stays silent).
+	RemoteType     string
+	EmploymentType string
 }
 
 // UpsertOutcome reports what UpsertFromATS actually did, for ingestion's
@@ -109,7 +114,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // distinguished from "content changed" without a second round trip.
 func contentHash(r Record) string {
 	h := sha256.New()
-	for _, field := range []string{r.Title, r.Description, r.ApplicationURL, r.CanonicalURL, r.LocationRaw} {
+	for _, field := range []string{r.Title, r.Description, r.ApplicationURL, r.CanonicalURL, r.LocationRaw, r.RemoteType, r.EmploymentType} {
 		h.Write([]byte(field))
 		h.Write([]byte{0})
 	}
@@ -141,8 +146,10 @@ const upsertJobQuery = `
 	)
 	INSERT INTO jobs (
 		company_id, target_company_id, source, source_job_id, canonical_url,
-		title, description, application_url, location_raw, published_at, content_hash, expires_at
-	) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11, $12)
+		title, description, application_url, location_raw, published_at, content_hash, expires_at,
+		remote_type, employment_type
+	) VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8, NULLIF($9, ''), $10, $11, $12,
+		COALESCE(NULLIF($13, ''), 'unknown'), COALESCE(NULLIF($14, ''), 'unknown'))
 	ON CONFLICT (source, source_job_id) DO UPDATE SET
 		title              = EXCLUDED.title,
 		description        = EXCLUDED.description,
@@ -151,6 +158,8 @@ const upsertJobQuery = `
 		canonical_url      = EXCLUDED.canonical_url,
 		published_at       = COALESCE(EXCLUDED.published_at, jobs.published_at),
 		expires_at         = COALESCE(EXCLUDED.expires_at, jobs.expires_at),
+		remote_type        = COALESCE(NULLIF($13, ''), jobs.remote_type),
+		employment_type    = COALESCE(NULLIF($14, ''), jobs.employment_type),
 		content_hash       = EXCLUDED.content_hash,
 		last_seen_at       = now(),
 		last_changed_at    = CASE WHEN jobs.content_hash IS DISTINCT FROM EXCLUDED.content_hash OR jobs.status <> 'open'
@@ -198,6 +207,7 @@ func (s *Store) UpsertFromATS(ctx context.Context, r Record) (UpsertOutcome, err
 	err := s.pool.QueryRow(ctx, upsertJobQuery,
 		r.CompanyID, r.TargetCompanyID, source, sourceJobID, strings.TrimSpace(r.CanonicalURL),
 		r.Title, r.Description, r.ApplicationURL, strings.TrimSpace(r.LocationRaw), publishedAt, newHash, expiresAt,
+		strings.TrimSpace(r.RemoteType), strings.TrimSpace(r.EmploymentType),
 	).Scan(&id, &inserted, &previousContentHash, &previousStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -332,7 +342,7 @@ func (s *Store) CloseBySourceID(ctx context.Context, targetCompanyID int64, sour
 // public Repository interface — a removed/closed job is not something
 // a job-seeker should be shown, even if it is still in the table for
 // ingestion's own history/audit purposes.
-const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, t.market, j.remote_type, j.employment_type,
+const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, t.market, j.source, j.remote_type, j.employment_type,
 	j.location_raw, COALESCE(j.published_at, j.first_seen_at) AS posted_at, j.application_url`
 
 // List returns open jobs matching filter, newest-first (ties broken by
@@ -482,7 +492,7 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		})
 	}
 	err = s.pool.QueryRow(ctx, query, args...).Scan(
-		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &remoteType, &employmentType,
+		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &j.Source, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &description,
 	)
 	if err != nil {
@@ -517,7 +527,7 @@ func scanJobSummaryWithTotal(row pgx.Row) (Job, int, error) {
 		total          int
 	)
 	err := row.Scan(
-		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &remoteType, &employmentType,
+		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &j.Source, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &total,
 	)
 	if err != nil {

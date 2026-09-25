@@ -26,6 +26,7 @@ type jobSummaryDTO struct {
 	CompanyLogoURL *string  `json:"company_logo_url"`
 	IsPriority     bool     `json:"is_priority"`
 	Market         string   `json:"market"`
+	Source         string   `json:"source"`
 	RemoteType     string   `json:"remote_type"`
 	EmploymentType string   `json:"employment_type"`
 	RegionNote     string   `json:"region_note"`
@@ -62,6 +63,7 @@ func toSummaryDTO(j job.Job) jobSummaryDTO {
 		CompanyLogoURL: logoURL,
 		IsPriority:     j.IsPriority,
 		Market:         string(j.Market),
+		Source:         j.Source,
 		RemoteType:     string(j.RemoteType),
 		EmploymentType: string(j.EmploymentType),
 		RegionNote:     j.RegionNote,

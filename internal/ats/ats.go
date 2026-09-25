@@ -77,6 +77,13 @@ type Job struct {
 	// ExpiresAt is the application deadline when the source publishes one
 	// (zero: none known). The public API stops serving the job after it.
 	ExpiresAt time.Time
+	// RemoteType and EmploymentType are what the source itself says about the
+	// role, in the jobs table's vocabulary ("remote", "hybrid", "onsite";
+	// "full_time", "part_time", "contract", "internship"). "" means the
+	// source does not say, and a stored value is then left as it is. Remote
+	// job boards fill RemoteType; ATS boards mostly cannot.
+	RemoteType     string
+	EmploymentType string
 	// Employer names the company that posted the job. Only multi-employer
 	// sources (job boards, search) fill it; a per-company board (Greenhouse,
 	// a feed, a careers page) leaves it empty because the target already

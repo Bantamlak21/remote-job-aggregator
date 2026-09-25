@@ -53,7 +53,9 @@ aggregator search-discover [names-file]  # find each company's ATS board via the
 aggregator ingest [--providers=a,b]   # fetch jobs from the active targets (Greenhouse
                                        # boards, RSS feeds, careers pages), upsert them, and
                                        # close out jobs that disappeared, and collect the newest
-                                       # jobs from Ethiojobs (free, on by default). The Serper-
+                                       # jobs from Ethiojobs and six remote job boards (Himalayas,
+                                       # Remotive, Jobicy, We Work Remotely, Working Nomads,
+                                       # Remote OK; free, on by default, about once a day). The Serper-
                                        # backed sources spend a fixed query allowance, so they
                                        # never run by default: name them, --providers=search
                                        # (LinkedIn, per priority company) or --providers=linkedin
@@ -121,6 +123,7 @@ raw credential even when the value itself was the problem.
 | `SERPER_API_KEY` | no | — | for `search-discover` and the search-backed source of `ingest`; from https://serper.dev/api-keys |
 | `SEARCH_MAX_QUERIES_PER_RUN` | no | `60` | cap on Serper queries one `ingest` run may spend across the `search` (1 per priority company) and `linkedin` (1 per keyword) sources, retries included; 1 – 2500. Serper's free tier is a fixed 2,500 queries, not a monthly allowance |
 | `ETHIOJOBS_MAX_PAGES` | no | `100` | most listing pages (12 jobs each) one Ethiojobs collection reads; 1 – 200 |
+| `HIMALAYAS_MAX_PAGES` | no | `25` | most pages (20 jobs each) one Himalayas collection reads; 1 – 100 |
 | `API_ADDR` | no | `:8080` | only for `serve`; must be a valid `host:port` |
 | `CORS_ALLOWED_ORIGIN` | no | `http://localhost:5173` | only for `serve`; a single explicit origin, never `*` |
 | `JOB_REPOSITORY` | no | `postgres` | only for `serve`; `postgres` (real ingested jobs) or `mock` (12 fixture jobs, no database) |
