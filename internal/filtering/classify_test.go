@@ -98,6 +98,8 @@ func TestPolicies(t *testing.T) {
 		{"P18 US citizen", ats("Remote", "remote", "You must be a US citizen."), Ineligible, BasisWorkAuthorization, ""},
 		{"P18 authorized to work in the US", ats("Remote", "remote", "Candidates must be authorized to work in the United States."), Ineligible, BasisWorkAuthorization, ""},
 		{"P18 security clearance", ats("Remote", "remote", "An active Top Secret clearance is required."), Ineligible, BasisWorkAuthorization, ""},
+		{"P18b export-control boilerplate naming US citizens has no effect", ats("Remote", "remote", "Due to export control laws and regulations, candidates must be a US citizen or national, US permanent resident, or lawfully admitted as a refugee."), Uncertain, BasisNoSignal, ""},
+		{"P12 an Available Locations line lists offices, it does not close the job", ats("Lisbon, Portugal", "unknown", "Available Locations: Lisbon, Portugal"), Uncertain, BasisNoSignal, ""},
 		{"P18b generic EEO and export text has no effect", ats("Remote", "remote", "We are an equal opportunity employer. Export control laws may apply to our products."), Uncertain, BasisNoSignal, ""},
 		// Restrictions written in the description
 		{"description: must be located in", ats("Remote", "remote", "You must be located in Germany or Austria."), Ineligible, BasisRestrictedPlaces, "must be located in"},

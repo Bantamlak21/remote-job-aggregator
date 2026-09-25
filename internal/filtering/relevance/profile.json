@@ -85,7 +85,15 @@
         "electronics engineer",
         "quality technician",
         "maintenance engineer",
-        "project engineer"
+        "project engineer",
+        "technical program management",
+        "technical sales",
+        "solutions integration",
+        "commissioning",
+        "optics",
+        "functional lead",
+        "oracle",
+        "technician"
       ]
     },
     {
@@ -102,7 +110,8 @@
         "account manager",
         "customer success",
         "sales representative",
-        "marketing manager"
+        "marketing manager",
+        "people operations"
       ]
     },
     {
@@ -172,7 +181,6 @@
         "dev ops",
         "platform engineer",
         "infrastructure engineer",
-        "infrastructure",
         "cloud engineer",
         "cloud architect",
         "systems engineer",
@@ -211,7 +219,15 @@
         "it security",
         "threat detection",
         "security risk",
-        "threat"
+        "threat",
+        "identity and access management",
+        "iam",
+        "vulnerability",
+        "endpoint protection",
+        "proactive security",
+        "information systems security",
+        "security officer",
+        "infrastructure security"
       ]
     },
     {
@@ -227,7 +243,6 @@
         "ai engineer",
         "ai researcher",
         "applied scientist",
-        "applied ai",
         "analytics engineer",
         "research scientist",
         "research engineer",
@@ -241,11 +256,10 @@
         "dba",
         "bi engineer",
         "data architect",
-        "applied researcher"
+        "applied researcher",
+        "software engineer machine learning"
       ],
       "not": [
-        "software engineer",
-        "software developer",
         "architect"
       ]
     },
@@ -335,7 +349,23 @@
         "django",
         "rails",
         "android",
-        "ios"
+        "ios",
+        "software engineering",
+        "engineering intern",
+        "distinguished engineer",
+        "fellow engineer",
+        "hypervisor",
+        "storage engineer",
+        "payments engineer",
+        "product engineer",
+        "performance engineer",
+        "ci engineer",
+        "ci cd",
+        "build and release",
+        "application engineer",
+        "integration engineer",
+        "platform software",
+        "manager software engineering"
       ],
       "not": [
         "business developer",

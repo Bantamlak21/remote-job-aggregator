@@ -44,6 +44,9 @@ var (
 	// Statements that applicants must be in certain places. Each captures the
 	// text after the phrase, which is then read for places.
 	onlyInPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\b(?:eligible|supported|accepted|permitted|hiring)\s+(?:locations?|countries|regions?|states)\s*[:\-]\s*(.+)`),
+		regexp.MustCompile(`\b(?:only|currently)\s+(?:hire|hiring|employ|employing|recruit|recruiting)\s+(?:people\s+|candidates\s+)?(?:in|from)\s+(.+)`),
+		regexp.MustCompile(`\bemploy\s+people\s+in\s+(?:countries\s+where\s+we\s+have\s+an\s+entity\s*)?(.+)`),
 		regexp.MustCompile(`\b(?:requires?|requiring)\s+(?:that\s+)?(?:you|candidates|applicants|employees)\s+(?:to\s+)?(?:be\s+)?(?:located|based|reside|live|resident|residing|living)\s+in\s+(.+)`),
 		regexp.MustCompile(`\b(?:people|candidates|applicants|those)\s+who\s+(?:live|reside)\s+in\s+(.+)`),
 		regexp.MustCompile(`\bonly\s+(?:candidates|applicants|people)\s+(?:who\s+are\s+)?(?:residing|located|based|living)\s+in\s+(.+)`),
@@ -57,9 +60,9 @@ var (
 		regexp.MustCompile(`\b(?:hiring|recruiting)\s+for\s+this\s+(?:role|position|job)\s+in\s+(.+)`),
 		regexp.MustCompile(`\bfocused\s+on\s+hiring\s+(?:for\s+this\s+(?:role|position|job)\s+)?in\s+(.+)`),
 		regexp.MustCompile(`\bexclusively\s+(?:based|located)\s+in\s+(.+)`),
-		regexp.MustCompile(`\b(?:must|need to|needs to|have to|has to|required to|should|will need to|are required to)\s+(?:currently\s+|also\s+|legally\s+|physically\s+|permanently\s+|primarily\s+|already\s+)*(?:be\s+)?(?:located|based|resident|residing|reside|live|living|work|working|permanently located)\s+(?:remotely\s+)?(?:and\s+\w+\s+)?(?:in|within|from|out of|across)\s+(.+)`),
+		regexp.MustCompile(`\b(?:must|need to|needs to|have to|has to|required to|should|will need to|are required to)\s+(?:currently\s+|also\s+|legally\s+|physically\s+|permanently\s+|primarily\s+|already\s+)*(?:be\s+)?(?:located|based|resident|residing|reside|live|living|work|working|permanently located|domiciled|present|physically present)\s+(?:remotely\s+)?(?:and\s+\w+\s+)?(?:in|within|from|out of|across)\s+(.+)`),
 		regexp.MustCompile(`\b(?:candidates|applicants|employees|people|talent|team members|individuals)\s+(?:must|need to|should|have to)\s+(?:be\s+)?(?:located|based|residing|resident|living)\s+(?:in|within)\s+(.+)`),
-		regexp.MustCompile(`\b(?:we\s+(?:are|'re)?\s*(?:currently\s+)?(?:only\s+)?(?:hiring|accepting applications|considering candidates|recruiting|looking for candidates)|this\s+(?:role|position|job|opportunity)\s+is\s+(?:currently\s+)?(?:only\s+)?(?:open|available|for candidates))\s+(?:to\s+(?:candidates|applicants|residents|people)\s+)?(?:located\s+|based\s+|living\s+)?(?:only\s+)?(?:in|within|from)\s+(.+)`),
+		regexp.MustCompile(`\b(?:we\s+(?:are|'re)?\s*(?:currently\s+)?(?:only\s+)?(?:hiring|accepting applications|considering candidates|recruiting|looking for candidates)|we\s+(?:can\s+)?only\s+(?:hire|employ|hiring|employing)|this\s+(?:role|position|job|opportunity)\s+is\s+(?:currently\s+)?(?:only\s+)?(?:open|available|for candidates))\s+(?:to\s+(?:candidates|applicants|residents|people)\s+)?(?:located\s+|based\s+|living\s+)?(?:only\s+)?(?:in|within|from)\s+(.+)`),
 		regexp.MustCompile(`\b(?:open|available|restricted|limited)\s+(?:only\s+)?to\s+(?:candidates|applicants|residents|people|those|individuals|citizens)\s+(?:who are\s+)?(?:located\s+|based\s+|living\s+|residing\s+)?(?:in|within|from)\s+(.+)`),
 		regexp.MustCompile(`\b(?:remote|role|position|job|opportunity|hiring|location)\s*[:(\-]?\s*(?:in\s+)?((?:the\s+)?[a-z][a-z .,/&]{1,40}?)\s*[- ]only\b`),
 		regexp.MustCompile(`\b(?:must be|need to be|needs to be|only|prefer|looking for)\s+((?:the\s+)?[a-z][a-z .]{1,30}?)[- ]based\b`),
@@ -70,26 +73,28 @@ var (
 	// where the job is, weaker than a requirement.
 	weakOnlyInPatterns = []*regexp.Regexp{
 		// "US-based candidates": pay, benefits and legal boilerplate say it.
-		regexp.MustCompile(`\b([a-z.]{2,15}(?:\s[a-z]{2,12})?)[- ]based\s+(?:candidates|applicants|engineers|developers|talent|professionals|employees)\b`),
+		regexp.MustCompile(`\b([a-z.]{2,15}(?:\s[a-z]{2,12})?)[- ]based\s+(?:candidates|applicants|engineers|developers|talent|professionals)\b`),
 		regexp.MustCompile(`\b(?:for|to)\s+(?:candidates|applicants|employees)\s+(?:who\s+are\s+)?(?:located|based|residing|living)\s+in\s+(.+)`),
 	}
 	// Residency statements, which name the place straight away ("resident in
 	// France", "citizens of the US"; not "a resident in a medical program").
 	residencyPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`\b(?:requirements?|location\s+requirements?|eligibility)\s*[:\-]\s*(?:you\s+(?:must|need\s+to)\s+be\s+)?(?:located\s+in\s+|based\s+in\s+|resident\s+(?:in|of)\s+|residing\s+in\s+)?(.+)`),
+		regexp.MustCompile(`\b(?:req|requirements?|location\s+requirements?|eligibility)\.?\s*[:\-]\s*(?:you\s+(?:must|need\s+to)\s+be\s+)?(?:located\s+in\s+|based\s+in\s+|resident\s+(?:in|of)\s+|residing\s+in\s+)?(.+)`),
 		regexp.MustCompile(`\b(?:resident|residents|citizens?|nationals?)\s+(?:in|of)\s+(.+)`),
 	}
 	// A "Location: X" line names the office or the posting's place, which is a
 	// hint about who may apply, not a requirement.
 	weakResidencyPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\blocation(?:\s+requirement)?\s*[:\-]\s*(.+)`),
+		regexp.MustCompile(`\bavailable\s+locations?\s*[:\-]\s*(.+)`),
 		regexp.MustCompile(`\b(?:duty\s+station|work\s+location|place\s+of\s+work|office\s+location)\s*[:\-]\s*(.+)`),
 	}
 	// Statements that need work authorization in a place.
 	authPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\b((?:us|usa|united states)\s+(?:citizens?|nationals?|residents?))\s+only\b`),
 		regexp.MustCompile(`\b(?:valid|current)\s+((?:us|uk|eu|united states|united kingdom|canada)\s+work\s+(?:permit|authori[sz]ation|visa))`),
-		regexp.MustCompile(`\b(?:must\s+be|need\s+to\s+be|be)\s+(?:a\s+)?((?:u\.?s\.?|united states)\s+(?:citizens?|nationals?|persons?))`),
+		regexp.MustCompile(`\b(?:must\s+be|need\s+to\s+be|be)\s+(?:an?\s+)?((?:us|united states|eu|european|uk|united kingdom)\s+(?:citizens?|nationals?|persons?|residents?))`),
+		regexp.MustCompile(`\b(?:public\s+trust|active\s+security)\s+(?:clearance)`),
 		regexp.MustCompile(`\b((?:u\.?s\.?|united states)\s+citizenship)\s+(?:is\s+)?(?:required|needed|mandatory)`),
 		regexp.MustCompile(`\b(?:active\s+|current\s+|eligible\s+for\s+(?:an?\s+)?)?((?:top\s+secret|ts/sci|secret)\s+(?:security\s+)?clearance)`),
 		regexp.MustCompile(`\b(?:authori[sz]ed|eligible|legally\s+(?:able|entitled|permitted|allowed)|right|permission|permit|allowed|entitled|able)\s+to\s+work\s+(?:legally\s+)?(?:remotely\s+)?(?:in|within)\s+(?:the\s+)?(.+)`),
@@ -98,9 +103,10 @@ var (
 	}
 	// Statements that applicants outside some places are not considered.
 	outsidePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\b(?:with\s+the\s+exception\s+of|excluded\s+(?:countries|regions|locations)\s*[:\-]|excl\.?|minus)\s+(.+)`),
 		regexp.MustCompile(`\b(?:all|any|every)\s+countries,?\s+(?:except|excluding|other\s+than|apart\s+from)\s+(.+)`),
 		regexp.MustCompile(`\b(?:worldwide|globally|anywhere(?:\s+in\s+the\s+world)?),?\s+(?:except|excluding|but\s+not)\s+(.+)`),
-		regexp.MustCompile(`\b(?:candidates|applicants|residents|people|those|individuals)\s+(?:from|in|based\s+in|located\s+in|residing\s+in)\s+([^.;]{2,80}?)\s+(?:are|is|will)\s+(?:not|no\s+longer)\s+(?:be\s+)?(?:eligible|considered|accepted|able|allowed|open)`),
+		regexp.MustCompile(`\b(?:candidates|applicants|residents|people|those|individuals)\s+(?:from|in|of|based\s+in|located\s+in|residing\s+in)\s+([^.;]{2,80}?)\s+(?:are|is|will)\s+(?:not|no\s+longer)\s+(?:be\s+)?(?:eligible|considered|accepted|able|allowed|open)`),
 		regexp.MustCompile(`\b(?:we\s+)?(?:can(?:not|'t)|are\s+unable\s+to|do\s+not|don't|aren't\s+able\s+to|are\s+not\s+able\s+to|cannot\s+currently)\s+(?:currently\s+)?(?:hire|employ|support|consider|accept)\s+(?:candidates\s+|applicants\s+)?(?:in|from|based in|located in)\s+(.+)`),
 		regexp.MustCompile(`\b(?:not|no)\s+(?:open|available|eligible)\s+(?:to|for)\s+(?:candidates|applicants|residents)?\s*(?:in|from|located in)\s+(.+)`),
 	}
@@ -132,6 +138,9 @@ func scanDescription(text string) []signal {
 		if !mayStateEligibility(low) {
 			continue
 		}
+		if negatedRe.MatchString(low) {
+			continue // "no need to be based in the US": the opposite of a requirement
+		}
 		exceptBefore := false
 		tail := func(re *regexp.Regexp) (string, bool) {
 			m := re.FindStringSubmatchIndex(low)
@@ -152,7 +161,19 @@ func scanDescription(text string) []signal {
 			return t, true
 		}
 		found := false
+		for _, re := range outsidePatterns {
+			if t, ok := tail(re); ok {
+				if ms := scanPlaces(t); len(ms) > 0 {
+					out = append(out, signal{kind: sigNotIn, places: ms, evidence: quote(s)})
+					found = true
+					break
+				}
+			}
+		}
 		for _, re := range onlyInPatterns {
+			if found {
+				break
+			}
 			if t, ok := tail(re); ok {
 				clause := t
 				if next := nextClause(sents, si, t); next != "" {
@@ -210,6 +231,9 @@ func scanDescription(text string) []signal {
 		}
 		if !found {
 			for _, re := range authPatterns {
+				if exportControlRe.MatchString(low) {
+					break // "Due to export control laws, candidates must be a US citizen..." is legal boilerplate
+				}
 				if t, ok := tail(re); ok {
 					ms := firstPlaces(t, 6)
 					if len(ms) == 0 && strings.Contains(t, "clearance") {
@@ -220,17 +244,6 @@ func scanDescription(text string) []signal {
 					}
 					if len(ms) > 0 {
 						out = append(out, signal{kind: sigAuthIn, places: ms, evidence: quote(s)})
-						found = true
-						break
-					}
-				}
-			}
-		}
-		if !found {
-			for _, re := range outsidePatterns {
-				if t, ok := tail(re); ok {
-					if ms := scanPlaces(t); len(ms) > 0 {
-						out = append(out, signal{kind: sigNotIn, places: ms, evidence: quote(s)})
 						found = true
 						break
 					}
@@ -304,7 +317,8 @@ var gateWords = []string{"locat", "based", "resid", "citizen", "national", "auth
 	"anywhere", "worldwide", "globally", "time zone", "timezone", "time-zone", "overlap", "working hours", "work hours", "business hours",
 	"core hours", "open to", "available to", "available during", "online", "right to work", "countries", "in the us", "in the uk",
 	"any geography", "hours", "pst", "est", "cet", "utc", "gmt", "eet", "pacific", "eastern", "central", "clearance", "citizen", "required", "considered", "accepted", "not be", "except", "excluding", "other than", "duty station",
-	"work location", "place of work", "office location", "location", "requires", "requirement"}
+	"work location", "place of work", "office location", "location", "requires", "requirement", "live", "domicil", "present", "excl", "exception", "supported", "accepted",
+	"hire", "employ", "entity", "commut", "onsite", "on-site", "days", "req:", "minus"}
 
 // mayStateEligibility is the cheap test that gates the pattern scan.
 func mayStateEligibility(low string) bool {
@@ -340,6 +354,10 @@ func nextClause(sents []string, i int, tail string) string {
 func scanPlaces(t string) []geo.Mention {
 	return withoutWorldwide(geo.Scan(scanPlacesText(t)))
 }
+
+var exportControlRe = regexp.MustCompile(`\bexport[- ]control|\bitar\b|\bexport\s+(?:laws|regulations|administration)`)
+
+var negatedRe = regexp.MustCompile(`\b(?:no\s+need|not\s+(?:required|necessary|needed)|don'?t\s+need|do\s+not\s+need|without\s+needing)\s+to\s+(?:be|live|reside|relocate)`)
 
 var listIntroRe = regexp.MustCompile(`\b(?:following|these|below|one of|countries|regions|locations|states|provinces)\b`)
 

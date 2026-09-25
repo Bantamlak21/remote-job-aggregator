@@ -41,7 +41,17 @@ func TestClassify_WholeWordPhrasesFirstRuleWins(t *testing.T) {
 		{"Technical Services Engineer", "other_tech", false},
 		{"Business Value Engineer", "other_tech", false},
 		{"Social Media Manager, Developer Community", "non_tech", false},
+		{"Widget Engineer", "non_tech", false}, // no bare-engineer catch-all: this guards the round-1 fix
+		{"Acoustic Design Engineer", "non_tech", false},
 		{"Python Engineer", "software_engineering", true},
+		{"Software Engineering Intern", "software_engineering", true},
+		{"Distinguished Engineer", "software_engineering", true},
+		{"Payments Engineer", "software_engineering", true},
+		{"Performance Engineer", "software_engineering", true},
+		{"Software Engineer, Infrastructure", "software_engineering", true},
+		{"Staff Software Engineer, Machine Learning", "data_ml", true},
+		{"Senior IAM Engineer", "devops_security", true},
+		{"People Operations Systems Administrator", "non_tech", false},
 		{"Mobile Architect", "software_engineering", true},
 		{"", "non_tech", false},
 		{"Ingénieur Logiciel Backend", "software_engineering", true}, // accents fold

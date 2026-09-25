@@ -48,6 +48,24 @@ func TestAdversarial_ClosedJobsAreNeverEligible(t *testing.T) {
 		{"US Remote in the title", Input{Source: "himalayas", Title: "US Remote Backend Engineer", Location: "Worldwide", RemoteType: "remote", Description: "x"}, Ineligible},
 		{"duty station elsewhere in the Ethiopian market", Input{Source: "ethiojobs", Title: "Officer", Location: "", Market: "ethiopia", RemoteType: "unknown",
 			Description: "Duty station: Nairobi, Kenya"}, Ineligible},
+		// Round 2: nearby wordings of the same requirements.
+		{"must live in (the gate once missed 'live')", worldwide("You must live in the United States."), Ineligible},
+		{"must currently live in", worldwide("You must currently live in Canada."), Ineligible},
+		{"with the exception of", worldwide("Open globally, with the exception of Ethiopia."), Ineligible},
+		{"excluded countries", worldwide("Excluded countries: Ethiopia, Sudan."), Ineligible},
+		{"excl.", worldwide("Open globally (excl. Africa)."), Ineligible},
+		{"domiciled in", worldwide("You must be domiciled in the UK."), Ineligible},
+		{"physically present in", worldwide("Employees must be physically present in the US."), Ineligible},
+		{"eligible locations", worldwide("Eligible locations: United States, Canada"), Ineligible},
+		{"supported countries", worldwide("Supported countries: Germany, France"), Ineligible},
+		{"only employ people where we have an entity", worldwide("We can only employ people in countries where we have an entity (UK, Germany, Poland)."), Ineligible},
+		{"we only hire in", Input{Source: "greenhouse", Title: "Engineer", Location: "EMEA", RemoteType: "remote", Description: "We only hire in the UK and Germany."}, Ineligible},
+		{"req: US-based", remoteATS("Req: US-based"), Ineligible},
+		{"U. S. with a space", worldwide("U. S. residents only."), Ineligible},
+		{"EU citizens on an EMEA tag", Input{Source: "greenhouse", Title: "Engineer", Location: "EMEA", RemoteType: "remote", Description: "You must be an EU citizen."}, Ineligible},
+		{"a region listed but the job is in an office", Input{Source: "greenhouse", Title: "Engineer", Location: "EMEA", RemoteType: "unknown",
+			Description: "You will work 2 days per week on-site in Dublin."}, Ineligible},
+		{"a time zone near but outside UTC+3", board("workingnomads", "UTC-3 to UTC+1"), Uncertain},
 		// Where the text disagrees with itself the answer is a conflict, never eligible.
 		{"Worldwide but Location: USA (remote)", worldwide("Location: USA (remote)"), Uncertain},
 		{"Worldwide but LATAM-based engineers", worldwide("We are hiring LATAM-based engineers."), Uncertain},
@@ -74,6 +92,10 @@ func TestAdversarial_ClosedJobsAreNeverEligible(t *testing.T) {
 func TestAdversarial_OpenJobsStayEligible(t *testing.T) {
 	c := NewClassifier()
 	for name, in := range map[string]Input{
+		"E-Verify boilerplate does not conflict with Global Remote": Input{Source: "lever", Title: "Engineer", Location: "Global Remote", RemoteType: "remote",
+			Description: "For US applicants: we participate in the federal E-Verify program, which confirms employment authorization of newly hired US based employees."},
+		"no need to be based in the US":            worldwide("No need to be based in the US, we hire everywhere."),
+		"residents of the EU are not eligible":     worldwide("Residents of the EU are not eligible."),
 		"except residents of the US":               worldwide("We welcome applications from candidates worldwide, except residents of the United States."),
 		"anywhere in the world":                    Input{Source: "greenhouse", Title: "Engineer", Location: "Remote", RemoteType: "remote", Description: "Candidates may be based anywhere in the world."},
 		"a U.S. mention that is not a requirement": worldwide("Our company was founded in the U.S. in 2010 and we hire worldwide."),
@@ -124,5 +146,33 @@ func TestClassify_CapsTheInputsSoAHugePostingCannotStallIt(t *testing.T) {
 	}
 	if got := capText("abc", 10); got != "abc" {
 		t.Errorf("capText(abc) = %q", got)
+	}
+}
+
+// The sentence splitter is linear (a 200 KB posting whose lines all end in "located in" once took
+// minutes), never joins across a full stop, and the acronym normalizer keeps what follows.
+func TestSentences_LinearAndOnlyJoinAcrossLineBreaks(t *testing.T) {
+	line := "Candidates must be located in\n"
+	small := strings.Repeat(line, 2000)
+	big := strings.Repeat(line, 8000)
+	t0 := nowMillis()
+	sentences(small)
+	smallMs := nowMillis() - t0
+	t0 = nowMillis()
+	sentences(big)
+	bigMs := nowMillis() - t0
+	if bigMs > 12*smallMs+300 { // 4x the input: linear is about 4x, quadratic is 16x
+		t.Errorf("4x the lines took %d ms against %d ms: not linear", bigMs, smallMs)
+	}
+	if got := sentences("Candidates must be located in\nthe United States."); len(got) != 1 {
+		t.Errorf("a phrase broken across lines was not joined: %q", got)
+	}
+	if got := sentences("you'll fit right in. Available Location: Dubai, UAE"); len(got) != 2 {
+		t.Errorf("sentences joined across a full stop: %q", got)
+	}
+	for in, want := range map[string]string{"U.S.-based": "US-based", "the U.S. and more": "the US and more", "U.S.A.": "USA", "U.K. and": "UK and", "U. S. only": "US only"} {
+		if got := normalizeAcronyms(in); got != want {
+			t.Errorf("normalizeAcronyms(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

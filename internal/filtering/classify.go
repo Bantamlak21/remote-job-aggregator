@@ -319,6 +319,10 @@ var (
 	descOnsiteRe = regexp.MustCompile(`(?i)\bbased\s+(?:in|at|out of)\s+our\s+[\w .,'-]{0,40}?\s*(?:office|hq|headquarters)\b|\b(?:this\s+)?(?:role|position|job)\s+(?:is|will be)\s+(?:a\s+)?(?:fully\s+|exclusively\s+)?(?:hybrid|on-?site|in[- ]office|office[- ]based|in[- ]person)\b|\b\d\s+days?\s+(?:a|per|each|every)\s+week\s+(?:in|at)\s+(?:the|our|one of our)\s+|\bwork(?:ing)?\s+(?:from the office|from our\s+[\w .-]{0,30}office)\b|#li-onsite\b|\b(?:this\s+)?(?:role|position|job)\s+is\s+(?:located|based)\s+(?:on-?site\s+)?(?:at|in)\b|\byou\s+will\s+be\s+(?:based|located)\s+(?:in|at|from)\b|\blocated\s+on-?site\b|\(on[- ]?site\)|\bwithin\s+\d+\s+miles\s+of\b|\bmust\s+(?:live|reside)\s+within\s+\d+|\blocated\s+from\s+our\s+[\w .-]{0,20}(?:office|hq|headquarters)\b|\bteam\s+is\s+located\s+in\s+(?:the\s+)?offices?\b|\bon-?site\s+(?:role|position|job)\b|\brequired\s+to\s+be\s+(?:on-?site|in the office)\b|\bmust\s+be\s+(?:on-?site|in the office|able to commute)\b|\bhybrid\s+(?:working\s+model|work(?:ing)?\s+(?:model|schedule|arrangement)|role|position)\b`)
 )
 
+// descOnsiteRegionRe: office statements that decide a job whose location lists a
+// region ("EMEA") and so would otherwise read as open.
+var descOnsiteRegionRe = regexp.MustCompile(descOnsiteRe.String() + `|\bon-?site\s+in\b|\bcommuting\s+distance\s+of\b`)
+
 var (
 	onsiteGates = []string{"office", "hq", "headquarters", "on-site", "onsite", "on site", "hybrid", "in-person", "in person", "#li-onsite", "commute", "days", "based", "located", "miles", "reside"}
 	remoteGates = []string{"remote", "home", "distributed"}
@@ -362,9 +366,6 @@ func (c *Classifier) fromLocation(in Input, loc location, desc string, board boo
 			case d == 0:
 				return &result{status: Eligible, confidence: 0.8, basis: BasisTimezoneWindow, evidence: []Evidence{locEv},
 					reasons: []string{"the time-zone window includes UTC+3"}}
-			case d <= 2:
-				return &result{status: Eligible, confidence: 0.6, basis: BasisTimezoneWindow, evidence: []Evidence{locEv},
-					reasons: []string{"the time zone is within two hours of UTC+3"}}
 			case d > tzMaxDistance:
 				r := decided(Ineligible, 0.7, BasisTimezoneOutside, "the required time zone is far from UTC+3", locEv)
 				r.restrict = []string{"time zone " + loc.windows[0].Text}
@@ -441,6 +442,10 @@ func (c *Classifier) atsScope(in Input, loc location, includes bool, why string,
 		why = "is an office in " + names(loc.places)
 	}
 	if includes && !remote && !loc.worldwide && loc.regionListed(c.Target) {
+		if hit := firstSentenceMatch(desc, onsiteGates, descOnsiteRegionRe); hit != "" {
+			r := decided(Ineligible, 0.7, BasisOnsiteElsewhere, "the region is listed, but the description describes office work", locEv, Evidence{Field: "description", Text: hit})
+			return r
+		}
 		return &result{status: Eligible, confidence: 0.75, basis: BasisRegionIncludes, evidence: []Evidence{locEv}, reasons: []string{"the location lists a region that includes Ethiopia"}}
 	}
 	if includes {

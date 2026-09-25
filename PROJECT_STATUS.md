@@ -846,11 +846,13 @@ tables, no model. Full description, rules, numbers and limits: [docs/eligibility
   target country and job content hash, panic containment), migration `000006_job_eligibility`,
   API fields and `?eligibility=` / `?relevant=` / `?role_family=`, `aggregator classify [--reclassify]`,
   and `ingest` classifies what it stored.
-- Measured on real jobs, against labels from an independent labeler who never saw the code:
-  dev (325) accuracy 0.942, eligible precision 1.000 and recall 1.000; audit of 400 unseen jobs: 0
-  gold-ineligible called eligible, eligible precision 0.973. The held-out score (223 jobs, labels
-  sealed from the builder) is in the reviewer's report. Of 20,310 open worldwide jobs, 483 (2.4%)
-  are open to Ethiopia, 5,685 unclear, 14,142 not.
+- Measured on real jobs, against labels from an independent labeler who never saw the code
+  (details and limits in docs/eligibility.md): dev (325) accuracy 0.945, eligible precision 1.000
+  and recall 1.000; an audit of 400 unseen jobs: 0 gold-ineligible called eligible, eligible
+  precision 0.973; the sealed held-out set (223 jobs), reviewed independently in two rounds:
+  eligible precision and recall 0.958, ineligible precision 0.967, accuracy 0.946, 0 ineligible
+  called eligible. Relevance on 320 never-seen titles: precision 0.934, recall 0.908. Of 20,310 open
+  worldwide jobs, 481 (2.4%) are open to Ethiopia, 5,585 unclear, 14,244 not.
 - The frozen rubric asked for an "eligible only" default and a public "wrong label?" button. Neither
   is built: the owner wants every worldwide job visible by default (the UI filter defaults to "Any
   location"), and a feedback button needs an authenticated or rate-limited write endpoint first.

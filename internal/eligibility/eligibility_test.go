@@ -256,6 +256,26 @@ func TestRun_ARulesPanicIsContainedAndTheJobStaysVisibleAsUncertain(t *testing.T
 	}
 }
 
+func TestRun_APanicStoresTheProfilesDefaultRoleNotAHardCodedOne(t *testing.T) {
+	f := newFixture(t, "Acme", false)
+	f.add(t, "1", "Backend Engineer", "Worldwide", "remote", "x")
+	profile, err := relevance.Parse([]byte(`{"default":"unsorted","relevant":[],"rules":[{"family":"eng","any":["backend"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := eligibility.NewService(eligibility.NewStore(f.db.Pool), panicRules{}, profile, "ET", 10, 1, quiet)
+	if _, err := svc.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	var family string
+	if err := f.db.Pool.QueryRow(context.Background(), `SELECT role_family FROM job_eligibility`).Scan(&family); err != nil {
+		t.Fatal(err)
+	}
+	if family != "unsorted" {
+		t.Errorf("role family after a rules panic = %q, want the profile's default %q", family, "unsorted")
+	}
+}
+
 func TestRun_StopsWhenCanceled(t *testing.T) {
 	f := newFixture(t, "Acme", false)
 	f.add(t, "1", "Backend Engineer", "Worldwide", "remote", "x")

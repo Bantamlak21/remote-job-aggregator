@@ -105,26 +105,36 @@ before the code (definitions, 20 edge-case policies, thresholds).
 
 | Set | What | Result |
 |---|---|---|
-| dev (325 real jobs, `internal/filtering/testdata/dev.jsonl`) | rules were built against it | accuracy 0.945; eligible precision 1.000, recall 1.000; ineligible precision 0.969, recall 0.952; uncertain share 0.154; role family accuracy 0.938, relevance precision 0.990, recall 0.980 |
-| audit (400 jobs the rules had not seen, a second labeler; bugs found here were fixed) | sampled by prediction: 160 predicted eligible, 150 ineligible, 90 uncertain | 0 of 174 gold-ineligible called eligible; eligible precision 0.973 (144 of 148), recall 1.000; ineligible precision 0.930 (159 of 171) |
-| held-out (223 jobs, labels sealed from the builder), reviewer round 1, before the fixes below | scored once per version by an independent reviewer on the full descriptions | eligible precision 0.958, recall 0.958; ineligible precision 0.942 (0.987 after the reviewer checked each disagreement against the full text), recall 0.967; uncertain share 0.193; accuracy 0.933 (0.964 adjudicated); 0 ineligible called eligible; every Ethiopia-located job eligible; relevance precision 0.853 (**failed the 0.90 bar**, fixed: a bare "engineer" is no longer a software role), recall 0.970 |
+| dev (325 real jobs, `internal/filtering/testdata/dev.jsonl`) | the rules were built against it | accuracy 0.945; eligible precision 1.000, recall 1.000; ineligible precision 0.969, recall 0.952; uncertain share 0.154; role family accuracy 0.932, relevance precision 1.000, recall 0.970 |
+| audit (400 jobs the rules had not seen, a second labeler; bugs found here were fixed) | sampled by prediction: 160 predicted eligible, 150 ineligible, 90 uncertain | 0 of 174 gold-ineligible called eligible; eligible precision 0.973 (144 of 148), recall 1.000; ineligible precision 0.915 (161 of 176) |
+| held-out (223 jobs, labels sealed from the builder), independent reviewer, round 2 | scored on the full descriptions; disagreements checked against the full text | eligible precision 0.958, recall 0.958; ineligible precision 0.967 (0.993 adjudicated), recall 0.967; uncertain share 0.211; accuracy 0.946 (0.951 adjudicated); 0 ineligible called eligible; 0 eligible called ineligible; every Ethiopia-located job eligible; 98% of quoted evidence found in the job text; output identical on every rerun |
+| roles (320 titles the profile had never seen, labeled blind) | relevance and role family, scored once before any tuning on them | relevance precision 0.934, recall 0.908; role family accuracy 0.887 |
 
-Round 1 also ran 110 adversarial inputs and found 25 phrasings of a closed job that came out
+The held-out relevance score is not clean: round 1 printed held-out titles in its report and the
+profile was then fixed with phrases from them, so the reviewer used the 400 audit titles (0.955 to
+0.963 precision, 0.934 to 0.956 recall, by the reviewer's own labels) and the sealed 320 above
+instead. Round 1 of the held-out review, before the fixes, had failed the relevance precision bar
+(0.853, a bare "engineer" counted as software) and found 25 phrasings of a closed job that came out
 eligible ("the U.S.A." with periods, "all countries except Ethiopia", "US residents only", a list
-after a colon, a sentence broken across two lines...). All 25 are fixed and each is a row in
-`TestAdversarial_ClosedJobsAreNeverEligible`; other phrasings can exist, and non-English ones are
-not read at all.
+after a colon, a sentence broken across two lines...). Round 2 found 38 more in a fresh probe of 70
+nearby wordings ("must live in", "with the exception of", "Excluded countries:", "domiciled in",
+"only employ people in countries where we have an entity"...), a sentence joiner that was
+quadratic on a hostile posting, and near-miss time zones read as eligible. Those are fixed after the
+review (they were not re-reviewed), each with a row in `TestAdversarial_ClosedJobsAreNeverEligible`.
+Other phrasings can exist, and non-English ones are not read at all (a German "Sie müssen in
+Deutschland wohnen" with a Worldwide tag comes out eligible).
 
 `TestDevGold_Eligibility` and `TestDevGold_RoleFamilyAndRelevance` re-run the dev scoring and fail
 under the rubric's bars (eligible precision 0.90, recall 0.85, ineligible precision 0.95, recall
 0.85, uncertain at most 0.25, at most 1 ineligible called eligible, relevance 0.90). `TestPolicies`
 has a row for each rubric policy the rules implement (P9, a clinical licence tied to a US state, is
-not implemented). Re-run: `go test ./internal/filtering/...`.
+not implemented; P19 conflicts are in `TestAdversarial_*`). Re-run: `go test ./internal/filtering/...`.
 
-What the numbers mean: in the corpus of 21,338 open jobs, 1,028 are in Ethiopia (all eligible), and
-of the 20,310 worldwide jobs 483 (2.4%) are open to Ethiopia, 5,685 (28%) are unclear and 14,142
-(70%) are not. Of the eligible worldwide ones, 245 say worldwide, 197 name a region that contains
-Ethiopia (EMEA), 29 fit by time zone, 9 are explicitly permitted and 3 are "anywhere except".
+What the numbers mean: in the corpus of 21,338 open jobs, 1,028 are in the Ethiopian list (1,027
+eligible; the other is a posting in the Ethiopian list whose text says it is in Nairobi), and of the
+20,310 worldwide jobs 481 (2.4%) are open to Ethiopia, 5,585 (27%) are unclear and 14,244 (70%) are
+not. Of the eligible worldwide ones, 244 say worldwide, 194 name a region that contains Ethiopia
+(EMEA), 29 fit by time zone, 11 are explicitly permitted and 3 are "anywhere except".
 
 ### Limits, stated plainly
 

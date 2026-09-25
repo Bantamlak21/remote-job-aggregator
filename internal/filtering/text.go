@@ -12,15 +12,19 @@ var (
 	spaceRe = regexp.MustCompile(`[ \t\r\f\v\x{00a0}]+`)
 )
 
-var acronymRe = regexp.MustCompile(`(?i)\bu\.s\.a\.?|\bu\.s\.?(?:\b|$)|\bu\.k\.?|\bu\.a\.e\.?`)
+var acronymRe = regexp.MustCompile(`(?i)\bu\.s\.a\.?|\bu\.\s?s\.?|\bu\.k\.?|\bu\.a\.e\.?`)
 
 // normalizeAcronyms writes "U.S.A." and "U.S." as "USA" and "US" (and U.K., U.A.E.):
 // the periods would otherwise end the sentence and cut "the U.S." to "the u".
 func normalizeAcronyms(s string) string {
+	s = abbrevRe.ReplaceAllStringFunc(s, func(m string) string { return strings.ReplaceAll(m, ".", "") })
 	return acronymRe.ReplaceAllStringFunc(s, func(m string) string {
-		return strings.ToUpper(strings.ReplaceAll(m, ".", ""))
+		return strings.ToUpper(strings.NewReplacer(".", "", " ", "").Replace(m))
 	})
 }
+
+// abbrevRe are abbreviations whose period would end a sentence ("excl. Africa").
+var abbrevRe = regexp.MustCompile(`(?i)\b(?:excl|incl|approx|etc|e\.g|i\.e)\.`)
 
 // plainText turns an HTML or plain description into plain text: tags removed
 // (block tags become line breaks), entities decoded, spaces collapsed.
@@ -53,27 +57,41 @@ func sentences(s string) []string {
 	parts := splitSentences(s)
 	var out []string
 	for i := 0; i < len(parts); i++ {
-		p := parts[i]
-		for i+1 < len(parts) && danglingRe.MatchString(p) {
+		p := parts[i].text
+		// Join across a line break only, at most twice, and only the last words
+		// are looked at (linear in the text, never a rescan of what was joined).
+		for joins := 0; joins < 2 && parts[i].brokenByLine && i+1 < len(parts) && danglingRe.MatchString(tailWords(p)); joins++ {
 			i++
-			p += " " + parts[i]
+			p += " " + parts[i].text
 		}
 		out = append(out, p)
 	}
 	return out
 }
 
-func splitSentences(s string) []string {
-	var out []string
+func tailWords(s string) string {
+	if len(s) > 24 {
+		return s[len(s)-24:]
+	}
+	return s
+}
+
+type sentence struct {
+	text         string
+	brokenByLine bool // the text after it starts on a new line (not after a full stop)
+}
+
+func splitSentences(s string) []sentence {
+	var out []sentence
 	last := 0
 	for _, m := range sentenceEnd.FindAllStringIndex(s, -1) {
 		if seg := strings.TrimSpace(s[last:m[0]]); seg != "" {
-			out = append(out, seg)
+			out = append(out, sentence{seg, s[m[0]:m[1]] == "\n"})
 		}
 		last = m[1]
 	}
 	if seg := strings.TrimSpace(s[last:]); seg != "" {
-		out = append(out, seg)
+		out = append(out, sentence{seg, false})
 	}
 	return out
 }
