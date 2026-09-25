@@ -104,3 +104,52 @@ func TestStoreGet_ReportsTheMarket(t *testing.T) {
 		}
 	}
 }
+
+// An Ethiopian (priority) company's job belongs to the Ethiopian list even when
+// a worldwide source found it: it never appears on the worldwide list, and
+// reports market "ethiopia". A non-priority company keeps its target's market.
+func TestStoreList_APriorityCompanysWorldwideSourceJobIsListedAsEthiopian(t *testing.T) {
+	ctx := context.Background()
+	db := newDB(t)
+	store := NewStore(db.Pool)
+
+	target, kifiya := seedTarget(t, ctx, db, "Kifiya", "kifiya-himalayas") // a worldwide target
+	otherTarget, acme := seedTarget(t, ctx, db, "Acme", "acme")
+	if _, err := db.Pool.Exec(ctx, `UPDATE companies SET is_priority = true WHERE id = $1`, kifiya); err != nil {
+		t.Fatalf("marking priority: %v", err)
+	}
+	day := func(d int) time.Time { return time.Date(2026, 9, d, 0, 0, 0, 0, time.UTC) }
+	for _, r := range []Record{
+		withPublished(baseRecord(target, kifiya, "k-worldwide-source"), day(22)),
+		withPublished(baseRecord(otherTarget, acme, "a-worldwide"), day(21)),
+	} {
+		if _, err := store.UpsertFromATS(ctx, r); err != nil {
+			t.Fatalf("seeding %s: %v", r.SourceJobID, err)
+		}
+	}
+
+	list := func(m market.Market) (names []string) {
+		t.Helper()
+		res, err := store.List(ctx, Filter{Market: m})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Total != len(res.Jobs) {
+			t.Errorf("%s: total %d, jobs %d", m, res.Total, len(res.Jobs))
+		}
+		for _, j := range res.Jobs {
+			names = append(names, string(j.Market)+":"+j.CompanyName)
+		}
+		return names
+	}
+	if got := list(market.Worldwide); len(got) != 1 || got[0] != "worldwide:Acme" {
+		t.Errorf("worldwide list = %v, want only Acme (Kifiya is Ethiopian)", got)
+	}
+	if got := list(market.Ethiopia); len(got) != 1 || got[0] != "ethiopia:Kifiya" {
+		t.Errorf("ethiopia list = %v, want Kifiya, reported as ethiopia", got)
+	}
+	j, err := store.Get(ctx, mustJobID(t, ctx, db, "k-worldwide-source"))
+	if err != nil || j.Market != market.Ethiopia {
+		t.Errorf("Get market = %q, err %v; want ethiopia", j.Market, err)
+	}
+}

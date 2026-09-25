@@ -13,13 +13,16 @@ sight.
 ## Markets: Ethiopian category and worldwide main page
 
 Every target has a `market` (`ethiopia` or `worldwide`, `target_companies.market`, migration
-`000004`); a job's market is its target's. The API reports it as `"market"` and filters on
+`000004`); a job's market is its target's, **except that a job of a priority (Ethiopian) company is
+always listed as `ethiopia`**, whatever source found it (`listMarketExpr` in `internal/job/store.go`).
+An Ethiopian company's job therefore appears only in the Ethiopian section, never on the worldwide
+main page, even when a worldwide remote board or its own Greenhouse board carries it. The API reports it as `"market"` and filters on
 `?market=`; the UI shows `worldwide` on the main page and `ethiopia` under the Ethiopia tab.
 The Ethiojobs and LinkedIn keyword collectors, the priority list's targets, and the old
 `feed`/`careers-site`/`search` targets are `ethiopia`; ATS boards (Greenhouse, Lever, Ashby) and
-every future worldwide source default to `worldwide`, even when the board belongs to a priority
-company. The market is a property of the source, not the company, so one
-company can appear in both lists. A collector names its market by implementing
+every future worldwide source default to `worldwide` for a company that is not a priority company
+(a priority company's jobs are listed as `ethiopia` regardless, see above). Otherwise the market is a
+property of the source, not the company, so one non-priority company can appear in both lists. A collector names its market by implementing
 `market.Provider`; a re-sighting that names no market never moves an existing target.
 
 ## Why these two

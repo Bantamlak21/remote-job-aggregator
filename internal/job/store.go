@@ -399,12 +399,19 @@ func (s *Store) MoveJob(ctx context.Context, source, sourceJobID string, targetC
 	return nil
 }
 
+// listMarketExpr is the market a job is listed under. It is its target's
+// market, except that a job of a priority (Ethiopian) company is always in the
+// Ethiopian list, whatever source found it: an Ethiopian company's job that a
+// worldwide remote board carries appears in the Ethiopian section only, never
+// on the worldwide main page. Needs the jobs' target (t) and company (c) joins.
+const listMarketExpr = `(CASE WHEN c.is_priority THEN 'ethiopia' ELSE t.market END)`
+
 // jobColumnsForAPI is the column list List/Get select, in the order
 // scanJobSummary expects. Only 'open' jobs are ever exposed through the
 // public Repository interface — a removed/closed job is not something
 // a job-seeker should be shown, even if it is still in the table for
 // ingestion's own history/audit purposes.
-const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, t.market, j.source, j.remote_type, j.employment_type,
+const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, ` + listMarketExpr + `, j.source, j.remote_type, j.employment_type,
 	j.location_raw, COALESCE(j.published_at, j.first_seen_at) AS posted_at, j.application_url`
 
 // List returns open jobs matching filter, newest-first (ties broken by
@@ -451,7 +458,7 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 		where += " AND c.is_priority"
 	}
 	if filter.Market != "" {
-		where += " AND t.market = " + arg(string(filter.Market))
+		where += " AND " + listMarketExpr + " = " + arg(string(filter.Market))
 	}
 	where += s.maxAgeClause(arg)
 	if q := strings.TrimSpace(filter.Query); q != "" {

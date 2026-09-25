@@ -50,7 +50,8 @@ the board's own page for the job and the board asks to be credited; the UI print
 **Markets.** Every job belongs to one of two lists, reported as `"market"`: `"ethiopia"` (jobs
 in Ethiopia or from Ethiopian employers: the Ethiopian category in the UI) or `"worldwide"`
 (companies hiring across borders: the main page). The market comes from the source the job was
-collected through, so one company can appear in both lists. `market=ethiopia` or
+collected through, so one company can appear in both lists; the exception is a priority (Ethiopian)
+company, whose jobs are always `"ethiopia"`, so they are never in the worldwide list. `market=ethiopia` or
 `market=worldwide` narrows a list to one; omitting it returns both. Additive change: the field
 is new and the parameter is optional.
 
