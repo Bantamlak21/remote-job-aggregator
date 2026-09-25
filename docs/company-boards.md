@@ -70,8 +70,9 @@ retail inventory). So the rules are strict, and everything refused is logged so 
   insurer called Sentry, a "Ramp Agent" at an airline and a "Linear Accelerator Technician" all pass the
   name rule and share no title with the software company. The whole board's titles are compared (case and
   punctuation ignored, and a bracketed note or a trailing "remote" dropped); a board with a domain proof
-  needs no titles. One shared title is enough only if it is not a generic one ("Software Engineer",
-  "Product Manager" and about 25 more are on any board); two shared titles always are. A board refused
+  needs no titles. At least one shared title must be a specific one: generic titles ("Software
+  Engineer", "Product Manager" and about 25 more are on any board) never count, alone or together. A
+  bracketed note is dropped before comparing, so "Ramp Agent (Chicago)" and "(Denver)" are one title. A board refused
   for this reason is reported as "lists none of the employer's job titles". Reading every title means
   reading the whole board (Ashby has no limit parameter, and the read is capped at 32 MB) for each slug
   variant, so `--from-boards` costs more per name than the curated list does.
@@ -96,7 +97,9 @@ jobs closed) only when all of these hold:
   seeded is never touched;
 - the look-up found the board and it **names itself as another company's**: a Greenhouse board whose
   name shares no word with the company's ("Fin" for Intercom). A board titled "Pantheon Systems, Inc"
-  or "Backblaze External Website" shares a word and is only unproven. Lever and Ashby boards do not
+  or "Backblaze External Website" shares a word, and "HelpScout" for "Help Scout" is the same name
+  spelled differently: those are only unproven. An entry with a domain in the names file is never
+  condemned on a board name at all. Lever and Ashby boards do not
   carry a name, so no board there can be positive evidence of this kind;
 - the company was fully checked (no failed probe, not left unreached).
 

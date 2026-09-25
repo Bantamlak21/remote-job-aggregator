@@ -902,8 +902,8 @@ func TestGuess_RefusalKindsSeparatePositiveEvidenceFromWeakDoubt(t *testing.T) {
 		"Emptyco":    NamedForAnother, // named for another company even with no jobs
 		"Quiet":      Unproven,
 		"Titled":     NoSharedTitle,
-		"Wise":       Unproven,        // an everyday-word name, board name matches, domain never said
-		"Acmerocket": NamedForAnother, // named "Acme Rocket"; a domain was given but no job says it
+		"Wise":       Unproven, // an everyday-word name, board name matches, domain never said
+		"Acmerocket": Unproven, // named "Acme Rocket"; a domain was given but no job says it: never condemned on a name
 	}
 	if len(got) != len(want) {
 		t.Fatalf("kinds = %v, want %v", got, want)
@@ -954,7 +954,7 @@ func TestGuess_ARetitledOrSuffixedGreenhouseBoardIsUnprovenNotNamedForAnother(t 
 	}
 }
 
-// Sharing only a generic title proves nothing; a specific one, or two, does.
+// Sharing only generic titles proves nothing; one specific title does.
 func TestSharesTitle_GenericTitlesAloneDoNotCorroborate(t *testing.T) {
 	e := Entry{Name: "Ramp", Titles: []string{"Software Engineer", "Growth Lead", "Product Designer"}}
 	for _, tc := range []struct {
@@ -963,10 +963,10 @@ func TestSharesTitle_GenericTitlesAloneDoNotCorroborate(t *testing.T) {
 		why   string
 	}{
 		{[]string{"Ramp Agent", "Software Engineer"}, false, "one generic title"},
-		{[]string{"Software Engineer", "Product Designer"}, true, "two shared titles"},
+		{[]string{"Software Engineer", "Product Designer"}, false, "two generic titles are still generic"},
 		{[]string{"Ramp Agent", "Growth Lead"}, true, "one specific title"},
 		{[]string{"Growth Lead (EMEA)", "x"}, true, "bracketed drift"},
-		{[]string{"Software Engineer", "Software Engineer"}, false, "the same generic title twice is still one"},
+		{[]string{"Software Engineer", "Software Engineer"}, false, "the same generic title twice"},
 		{[]string{"growth   lead - Remote"}, true, "a dash before the suffix collapses to a space"},
 		{[]string{"Growth Lead Remote Sales"}, false, "remote inside a title is not a suffix"},
 		{[]string{"Growth Lead Remote"}, true, "trailing remote"},
@@ -980,6 +980,36 @@ func TestSharesTitle_GenericTitlesAloneDoNotCorroborate(t *testing.T) {
 	// An employer title that has no key never matches a board title that has none.
 	if sharesTitle(Entry{Name: "X", Titles: []string{"???"}}, []string{"!!!"}) {
 		t.Errorf("empty keys matched each other")
+	}
+}
+
+// A board named with another spelling of our name is unproven, not another
+// company's; and an entry with a domain is never condemned on a name.
+func TestGuess_SpellingVariantsAndDomainEntriesAreNeverNamedForAnother(t *testing.T) {
+	bodies := map[string]string{}
+	for slug, title := range map[string]string{"helpscout": "HelpScout", "sumologic": "SumoLogic Inc", "gitlab": "Git Lab", "intercom": "Fin"} {
+		bodies["gh/"+slug] = fmt.Sprintf(`{"name":%q}`, title)
+		bodies["gh/"+slug+"/jobs"] = `{"jobs":[{"id":1,"title":"A"}]}`
+		bodies["gh/"+slug+"/jobs/1"] = `{"content":"nothing"}`
+	}
+	g, _ := newFakeATS(t, bodies)
+	_, report := g.Guess(context.Background(), []Entry{
+		{Name: "Help Scout"}, {Name: "Sumo Logic"}, {Name: "GitLab"},
+		{Name: "Intercom", Domain: "intercom.com"}, // domain listed, not found in its jobs: unproven
+	})
+	if len(report.Refused) != 4 {
+		t.Fatalf("refused %v, want all four", refused(report))
+	}
+	for _, r := range report.Refused {
+		if r.Kind != Unproven {
+			t.Errorf("%s: kind %d, want Unproven", r.Name, r.Kind)
+		}
+	}
+	// Without a domain, a board named for an unrelated company is still NamedForAnother.
+	g, _ = newFakeATS(t, map[string]string{"gh/intercom": bodies["gh/intercom"], "gh/intercom/jobs": bodies["gh/intercom/jobs"]})
+	_, report = g.Guess(context.Background(), names("Intercom"))
+	if len(report.Refused) != 1 || report.Refused[0].Kind != NamedForAnother {
+		t.Errorf("refused %v, want Intercom as NamedForAnother", report.Refused)
 	}
 }
 
