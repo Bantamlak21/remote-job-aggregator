@@ -10,6 +10,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/companymatch"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
@@ -156,7 +157,11 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 			Err: fmt.Errorf("ingestion: collector %s: %w", name, err)}}
 	}
 
-	if skip := in.tooSoon(ctx, name, col); skip {
+	skip, err := in.tooSoon(ctx, name, col)
+	if err != nil {
+		return failed(err)
+	}
+	if skip {
 		return nil
 	}
 
@@ -279,6 +284,15 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 		}
 		touched[target.ID] = true
 
+		// Skip an opening another source already stores for this company in
+		// this market, even if it was stored by an earlier invocation.
+		if existing, oerr := in.jobs.OpenOpenings(ctx, target.CompanyID, string(dedupeMarket), provider); oerr != nil {
+			in.logger.Warn("ingestion: could not check for duplicates of other sources; storing without the check",
+				"collector", name, "employer", g.employer, "error", oerr)
+		} else if len(existing) > 0 {
+			fresh = dropOpenings(fresh, existing, dedupeMarket)
+		}
+
 		r := in.persist(ctx, target, fresh, staleAfter, true)
 		results = append(results, r)
 		if r.Err == nil {
@@ -304,34 +318,62 @@ func (in *Ingester) runCollector(ctx context.Context, name string, col Collector
 // limits how often it may be called and it ran too recently. It records the
 // run when it lets one through (an attempt counts: the request was made
 // whether or not it succeeded).
-func (in *Ingester) tooSoon(ctx context.Context, name string, col Collector) bool {
+func (in *Ingester) tooSoon(ctx context.Context, name string, col Collector) (skip bool, err error) {
 	ic, ok := col.(IntervalCollector)
 	rl := in.collectors.RunLog
 	if !ok || rl == nil || ic.MinInterval() <= 0 {
-		return false
+		return false, nil
 	}
 	now := in.now()
 	if !in.forceCollectors {
 		last, seen, err := rl.LastRun(ctx, name)
 		if err != nil {
 			// Not knowing is not permission: this source asks to be called
-			// rarely, so skip rather than risk being blocked.
-			in.logger.Warn("ingestion: skipping a rate-limited collector because its last run could not be read",
-				"collector", name, "error", err)
-			return true
+			// rarely, so it is not called. It is also not a quiet skip: the run
+			// log being unreadable (a missing migration, a database problem) is
+			// a failure the operator must see.
+			return false, fmt.Errorf("reading the run log to check the rate limit: %w", err)
 		}
-		if seen && now.Sub(last) < ic.MinInterval() {
+		// A scheduled run lands a little earlier or later than the last one (the
+		// check happens some minutes into the process), so a gap of up to
+		// intervalTolerance short of the minimum still counts as the interval.
+		if seen && now.Sub(last) < ic.MinInterval()-intervalTolerance {
 			in.logger.Info("ingestion: skipping a collector that ran recently (use --force to override)",
 				"collector", name, "last_run", last, "min_interval", ic.MinInterval())
-			return true
+			return true, nil
 		}
 	}
 	if err := rl.RecordRun(ctx, name, now); err != nil {
-		in.logger.Warn("ingestion: skipping a rate-limited collector because its run could not be recorded",
-			"collector", name, "error", err)
-		return true
+		return false, fmt.Errorf("recording the run for the rate limit: %w", err)
 	}
-	return false
+	return false, nil
+}
+
+// intervalTolerance is how much earlier than MinInterval a scheduled run may
+// arrive and still go ahead.
+const intervalTolerance = 10 * time.Minute
+
+// dropOpenings removes the jobs that duplicate an opening already stored by
+// another source: the same title, and in the Ethiopian market the same place
+// (see openingStored). Closure markers stay.
+func dropOpenings(jobs []ats.Job, existing []job.Opening, mk market.Market) []ats.Job {
+	out := jobs[:0:0]
+	for _, aj := range jobs {
+		dup := false
+		if !aj.Closed {
+			for _, o := range existing {
+				if companymatch.TitleKey(o.Title) == companymatch.TitleKey(aj.Title) &&
+					(mk == market.Worldwide || companymatch.SamePlace(o.Location, aj.LocationRaw)) {
+					dup = true
+					break
+				}
+			}
+		}
+		if !dup {
+			out = append(out, aj)
+		}
+	}
+	return out
 }
 
 // openingKey identifies an opening within a market: employer and title.

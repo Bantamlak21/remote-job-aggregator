@@ -99,6 +99,9 @@ type JobUpserter interface {
 	// a job's identity is the board's own id, and an employer renamed on the
 	// board must not strand the job under the old spelling.
 	MoveJob(ctx context.Context, source, sourceJobID string, targetCompanyID, companyID int64) error
+	// OpenOpenings lists a company's open jobs in one market from sources
+	// other than excludeSource, for cross-run duplicate detection.
+	OpenOpenings(ctx context.Context, companyID int64, mk, excludeSource string) ([]job.Opening, error)
 }
 
 // Result is the outcome of ingesting one target. Err is nil if and only

@@ -126,6 +126,15 @@ func (h *Himalayas) Collect(ctx context.Context) ([]ats.Job, error) {
 		for i := 0; i < broken; i++ {
 			t.addBroken()
 		}
+		if len(pg.Jobs) > 0 && len(records) == 0 && n > 1 {
+			// Every record on a later page is undecodable: the format changed
+			// under us. Stop instead of paging on for nothing.
+			jobs, rerr := t.result()
+			if rerr != nil {
+				return nil, rerr
+			}
+			return jobs, fmt.Errorf("himalayas: page %d has no decodable record: %w", n, ats.ErrPartialResult)
+		}
 		inWindow := 0
 		for _, j := range records {
 			pub, _ := j.PubDate.Int64()

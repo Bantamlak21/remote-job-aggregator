@@ -650,11 +650,122 @@ func TestRunCollectors_IfTheLastRunCannotBeReadARateLimitedCollectorIsNotCalled(
 	cfg := in.collectors
 	cfg.RunLog = &fakeRunLog{readErr: errors.New("db down")}
 	in.WithCollectors(cfg)
-	if _, err := in.RunCollectors(context.Background(), []string{"remotive"}); err != nil {
+	results, err := in.RunCollectors(context.Background(), []string{"remotive"})
+	if err != nil {
 		t.Fatalf("RunCollectors() error = %v", err)
 	}
 	if col.calls != 0 {
 		t.Errorf("collector called %d times although its rate limit could not be checked", col.calls)
+	}
+	// Not a quiet skip: an unreadable run log (a missing migration, a database
+	// problem) is a failure the operator must see in the results.
+	if len(results) != 1 || results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "run log") {
+		t.Errorf("results = %+v, want one failed result naming the run log", results)
+	}
+}
+
+// A scheduled run lands a little earlier than the minimum gap after the last
+// one; within the tolerance it still goes ahead.
+func TestRunCollectors_AScheduledRunJustInsideTheGapStillGoesAhead(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ago      time.Duration
+		wantCall bool
+	}{
+		{"exactly the gap", 6 * time.Hour, true},
+		{"5 minutes short", 6*time.Hour - 5*time.Minute, true},
+		{"just inside the tolerance", 6*time.Hour - intervalTolerance, true},
+		{"11 minutes short", 6*time.Hour - 11*time.Minute, false},
+		{"an hour ago", time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			col := &fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{mkJob("a", "Cook", "Acme")}}
+			in, _ := newCollectorIngester(&fakeJobUpserter{}, newFakeRegistrar(), nil, nil, map[string]Collector{"remotive": intervalCollector{col, 6 * time.Hour}})
+			now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+			in.now = func() time.Time { return now }
+			cfg := in.collectors
+			cfg.RunLog = &fakeRunLog{last: map[string]time.Time{"remotive": now.Add(-tc.ago)}}
+			in.WithCollectors(cfg)
+			if _, err := in.RunCollectors(context.Background(), []string{"remotive"}); err != nil {
+				t.Fatal(err)
+			}
+			if (col.calls == 1) != tc.wantCall {
+				t.Errorf("calls = %d, want called = %t", col.calls, tc.wantCall)
+			}
+		})
+	}
+}
+
+// ---- duplicates across runs ----
+
+func TestRunCollectors_AnOpeningAnotherSourceAlreadyStoresIsSkippedAcrossRuns(t *testing.T) {
+	// The store says Himalayas already holds "Backend Engineer" for this company
+	// in the worldwide market (stored by an earlier invocation).
+	jobs := &fakeJobUpserter{openings: []job.Opening{{Title: "Backend  Engineer!", Location: "United States"}}}
+	col := marketCollector{&fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{
+		mkJob("j1", "backend engineer", "Acme"), // the same opening under another source: skipped
+		mkJob("j2", "Data Analyst", "Acme"),     // a different opening: stored
+	}}, market.Worldwide}
+	in, _ := newCollectorIngester(jobs, newFakeRegistrar(), nil, nil, map[string]Collector{"jobicy": col})
+	if _, err := in.RunCollectors(context.Background(), []string{"jobicy"}); err != nil {
+		t.Fatalf("RunCollectors() error = %v", err)
+	}
+	if got := storedIDs(jobs); !slices.Equal(got, []string{"j2"}) {
+		t.Errorf("stored = %v, want only j2", got)
+	}
+	if len(jobs.openingCalls) != 1 || jobs.openingCalls[0].market != "worldwide" || jobs.openingCalls[0].avoid != "jobicy" {
+		t.Errorf("OpenOpenings calls = %+v, want one for the worldwide market excluding the collector's own source", jobs.openingCalls)
+	}
+}
+
+// In the Ethiopian market the place still matters.
+func TestRunCollectors_AnEthiopianOpeningInAnotherCityIsNotADuplicateOfAnotherSourcesCopy(t *testing.T) {
+	jobs := &fakeJobUpserter{openings: []job.Opening{{Title: "Cashier", Location: "Addis Ababa"}}}
+	at := func(id, place string) ats.Job {
+		j := mkJob(id, "Cashier", "Bank")
+		j.LocationRaw = place
+		return j
+	}
+	col := marketCollector{&fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{at("a", "Addis Ababa, Ethiopia"), at("h", "Hawassa")}}, market.Ethiopia}
+	in, _ := newCollectorIngester(jobs, newFakeRegistrar(), nil, nil, map[string]Collector{"ethiojobs": col})
+	if _, err := in.RunCollectors(context.Background(), []string{"ethiojobs"}); err != nil {
+		t.Fatalf("RunCollectors() error = %v", err)
+	}
+	if got := storedIDs(jobs); !slices.Equal(got, []string{"h"}) {
+		t.Errorf("stored = %v, want only the Hawassa opening (the Addis one duplicates the other source's copy)", got)
+	}
+}
+
+func TestRunCollectors_IfTheDuplicateCheckFailsTheJobsAreStillStored(t *testing.T) {
+	jobs := &fakeJobUpserter{openingsErr: errors.New("db hiccup")}
+	col := &fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{mkJob("j1", "Cook", "Acme")}}
+	in, _ := newCollectorIngester(jobs, newFakeRegistrar(), nil, nil, map[string]Collector{"x": col})
+	if _, err := in.RunCollectors(context.Background(), []string{"x"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedIDs(jobs); !slices.Equal(got, []string{"j1"}) {
+		t.Errorf("stored = %v, want j1 (a failed duplicate check must not lose jobs)", got)
+	}
+}
+
+// The same title and place at one employer in two markets are two jobs in two
+// lists: an Ethiopian listing must never suppress a worldwide one (or the
+// reverse) in the same run.
+func TestRunCollectors_OpeningsAreNeverComparedAcrossMarkets(t *testing.T) {
+	at := func(id string) ats.Job {
+		j := mkJob(id, "Backend Engineer", "Acme")
+		j.LocationRaw = "Addis Ababa"
+		return j
+	}
+	world := marketCollector{&fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{at("w1")}}, market.Worldwide}
+	local := marketCollector{&fakeCollector{staleAfter: time.Hour, jobs: []ats.Job{at("l1")}}, market.Ethiopia}
+	jobs := &fakeJobUpserter{}
+	in, _ := newCollectorIngester(jobs, newFakeRegistrar(), nil, nil, map[string]Collector{"remotive": world, "ethiojobs": local})
+	if _, err := in.RunCollectors(context.Background(), []string{"remotive", "ethiojobs"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedIDs(jobs); !slices.Equal(got, []string{"l1", "w1"}) {
+		t.Errorf("stored = %v, want both (different markets)", got)
 	}
 }
 

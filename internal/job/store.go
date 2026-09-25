@@ -347,6 +347,37 @@ func (s *Store) CloseBySourceID(ctx context.Context, targetCompanyID int64, sour
 	return int(tag.RowsAffected()), nil
 }
 
+// Opening is the identity of one open job as far as duplicate detection goes.
+type Opening struct {
+	Title    string
+	Location string
+}
+
+const openOpeningsQuery = `SELECT j.title, COALESCE(j.location_raw, '')
+	FROM jobs j JOIN target_companies t ON t.id = j.target_company_id
+	WHERE j.company_id = $1 AND t.market = $2 AND j.status = 'open' AND j.source <> $3`
+
+// OpenOpenings lists the open jobs of a company in one market that came from
+// a source other than excludeSource. Collectors use it to skip an opening
+// another source already stores, across separate runs (the in-run check only
+// sees one invocation, and rate-limited boards run in different ones).
+func (s *Store) OpenOpenings(ctx context.Context, companyID int64, mk, excludeSource string) ([]Opening, error) {
+	rows, err := s.pool.Query(ctx, openOpeningsQuery, companyID, mk, excludeSource)
+	if err != nil {
+		return nil, fmt.Errorf("job: listing open openings of company %d: %w", companyID, err)
+	}
+	defer rows.Close()
+	var out []Opening
+	for rows.Next() {
+		var o Opening
+		if err := rows.Scan(&o.Title, &o.Location); err != nil {
+			return nil, fmt.Errorf("job: scanning an opening: %w", err)
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 const moveJobQuery = `UPDATE jobs SET target_company_id = $3, company_id = $4
 	WHERE source = $1 AND source_job_id = $2`
 

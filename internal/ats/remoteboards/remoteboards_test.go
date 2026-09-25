@@ -555,6 +555,25 @@ func TestHimalayas_AnAlreadyExpiredJobIsNotStored(t *testing.T) {
 	}
 }
 
+// A later page where no record can be decoded means the format changed: stop,
+// keep what was read, report the failure.
+func TestHimalayas_ALaterPageOfUndecodableRecordsEndsTheRunWithAPartialResult(t *testing.T) {
+	site := newSite(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("cursor") != "" {
+			_, _ = w.Write([]byte(`{"nextCursor":"more","jobs":[{"pubDate":{"x":1}},{"pubDate":[1]}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(himPage("c2", himJob("a", fixedNow.Add(-time.Hour)))))
+	})
+	jobs, err := newHimalayas(site.URL, 20).Collect(context.Background())
+	if len(jobs) != 1 || !errors.Is(err, ats.ErrPartialResult) {
+		t.Errorf("jobs = %d, err = %v; want the first page's job and a partial-result error", len(jobs), err)
+	}
+	if site.count() != 2 {
+		t.Errorf("%d requests, want 2 (no paging on through a page nothing can be read from)", site.count())
+	}
+}
+
 func TestHimalayas_CancellationIsReturned(t *testing.T) {
 	site := serveBody(t, 200, []byte(himPage("c", himJob("a", fixedNow.Add(-time.Hour)))))
 	ctx, cancel := context.WithCancel(context.Background())

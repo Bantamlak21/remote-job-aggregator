@@ -48,8 +48,10 @@ worldwide market, so an employer becomes a company and a worldwide target on fir
 - **Each board has a minimum gap between runs**, remembered in the `collector_runs` table
   (migration `000005`), so it holds across separate `ingest` processes and cron runs: a board
   that ran more recently is skipped with a log line, unless `--force` is given. An attempt counts
-  (the request was made whether or not it succeeded), and if the last run cannot be read the
-  board is skipped rather than risked. Remotive's 6 hours keeps it under its 4 requests a day.
+  (the request was made whether or not it succeeded), and if the run log cannot be read (a
+  missing migration, a database problem) the board is not called and the run reports a failed
+  result. A scheduled run may arrive up to 10 minutes short of the gap and still goes ahead, so
+  an exact 12-hour cron is not skipped. Remotive's 6 hours keeps it near its 4 requests a day.
 - Responses are size-capped (8 MiB); one over the cap is an error, never a shorter list.
 - A response that decodes but yields **no usable record** is an error, never "no jobs" (a
   renamed field would otherwise age out every stored job); an empty result because every job is
@@ -71,9 +73,14 @@ Every board asks for a visible credit and a link back; Remotive and Himalayas ad
 - **Credit and link back:** each job's URL is the board's own page (enforced), the API reports the
   `source`, and the UI prints "via <board>" on the card, "Apply on <board>" on the button and
   "Listing from <board>" with a link on the detail page.
-- **Not passed on (Remotive):** the jobs are shown on this site only. The project publishes no
-  job feed, sitemap or `JobPosting` markup, and nothing sends these jobs to other job sites or
-  search engines' job products. If that ever changes, Remotive's jobs must be excluded from it.
+- **Not passed on (Remotive):** the project sends these jobs nowhere: there is no job feed,
+  sitemap or `JobPosting` markup, and nothing submits them to other job sites or search engines'
+  job products. **Its public JSON API (`GET /api/v1/jobs`) is unauthenticated, however, and
+  returns board jobs, Remotive's included, to anyone who calls it.** That is how the site's own
+  pages read them, and Remotive's terms name resubmission to other job sites, not this; but an
+  API that anyone can read is also a way to pass the jobs on. If you want to close that door,
+  either leave Remotive out of the providers (`ingest` without it) or add an allow-list to the
+  API; this is left as an owner decision.
 - **Nothing collected in exchange:** the site asks for no sign-up or e-mail to see a job.
 - **Rates:** the minimum gaps above.
 - **Logos:** none stored or shown.
@@ -103,9 +110,11 @@ text.
   about 850 jobs a day: on 2026-09-25 its 50 pages (1,000 jobs) reached back about 28 hours, so
   even one run a day leaves no gap (the `himalayas: read` log line shows the oldest publish time
   reached; if it approaches the run interval, raise `HIMALAYAS_MAX_PAGES`). Companies' own boards (Lever, Ashby, Greenhouse) are far larger.
-- **Duplicates across boards** are removed within one run only, and by employer and title alone
-  (every listing is remote and boards word the region differently: "USA", "United States").
-  Different markets are never compared.
+- **Duplicates across boards** are skipped by employer and title alone (every listing is remote
+  and boards word the region differently: "USA", "United States"), both within one run and
+  against what other sources already store, so boards that run in different invocations do not
+  show one job twice. Different markets are never compared, and in the Ethiopian market the place
+  must match too. If a copy is stored first from a poorer source, it stays until it ages out.
 - **Priority companies:** a worldwide board's employer is matched only against priority companies
   that also hire outside Ethiopia (Gebeya), so a same-named company elsewhere does not take the
   Ethiopian company's row and badge.
