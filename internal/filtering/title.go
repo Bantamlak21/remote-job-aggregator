@@ -15,6 +15,8 @@ var (
 	headquarterRe = regexp.MustCompile(`(?im)\bheadquarters:[ \t]*(.*?)[ \t]*(?:URL:|$)`)
 )
 
+var titleRemotePlaceRe = regexp.MustCompile(`(?i)\b([a-z.]{2,15})\s+remote\b|\bremote\s*[-\x{2013}:]?\s*([a-z.]{2,15})\b`)
+
 // scanTitle reads restrictions written into a job title: "(US based)",
 // "Remote (North America)", "US-Based", "Account Executive - Germany".
 func scanTitle(title string) []signal {
@@ -36,6 +38,16 @@ func scanTitle(title string) []signal {
 			return out
 		}
 	}
+	for _, m := range titleRemotePlaceRe.FindAllStringSubmatch(title, -1) {
+		word := m[1]
+		if word == "" {
+			word = m[2]
+		}
+		if ms := geo.Scan(word); len(ms) == 1 && ms[0].Place.Kind != geo.Worldwide && ms[0].Place.Kind != geo.Ambiguous {
+			out = append(out, signal{kind: sigOnlyIn, places: ms, evidence: quote(title), field: "title"})
+			return out
+		}
+	}
 	for _, m := range titleBracket.FindAllStringSubmatch(title, -1) {
 		inner := m[1]
 		if ms := geo.Scan(inner); len(ms) > 0 && (mostlyPlaces(inner, ms) || hasAny(strings.ToLower(inner), "based", "remote", "only", "eligible", "resident")) {
@@ -50,7 +62,13 @@ func scanTitle(title string) []signal {
 	if len(out) == 0 {
 		if m := titleTail.FindStringSubmatch(title); m != nil {
 			if ms := geo.Scan(m[1]); len(ms) > 0 && mostlyPlaces(m[1], ms) {
+				// "Head of CS, DACH": a territory or an office, a hint that only
+				// counts against a location that permits Ethiopia.
+				n := len(out)
 				add(withoutWorldwide(ms))
+				for i := n; i < len(out); i++ {
+					out[i].weak = true
+				}
 			}
 		}
 	}

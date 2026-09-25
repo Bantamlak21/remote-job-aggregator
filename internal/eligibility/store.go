@@ -91,8 +91,10 @@ const upsertQuery = `
 		relevant = EXCLUDED.relevant, relevance_matched = EXCLUDED.relevance_matched,
 		classifier_version = EXCLUDED.classifier_version, job_content_hash = EXCLUDED.job_content_hash, classified_at = now()`
 
-// Save writes the verdicts in one transaction. A job deleted since it was read
-// (the foreign key fails) is skipped, not an error for the whole batch.
+// Save writes the verdicts in one transaction. A job already deleted when the
+// row is written is skipped (the insert is guarded by an EXISTS check); a job
+// deleted in the instant between that check and the insert would still fail
+// the batch, which the next run redoes.
 func (s *Store) Save(ctx context.Context, rows []Row) error {
 	if len(rows) == 0 {
 		return nil

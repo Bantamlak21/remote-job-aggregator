@@ -137,7 +137,7 @@ func (s *Service) one(p Pending) (row Row, failed bool) {
 			s.logger.Error("eligibility: the rules panicked on a job; storing it as uncertain", "job_id", p.ID, "panic", fmt.Sprint(r))
 			row.Verdict = filtering.Verdict{Status: filtering.Uncertain, Confidence: 0, Basis: filtering.BasisNoSignal,
 				Reasons: []string{"the rules failed on this job"}, Evidence: []filtering.Evidence{}, Locations: []string{}, Restrictions: []string{}}
-			row.Role = relevance.Result{Family: "non_tech"}
+			row.Role = s.roles.Classify("") // the profile's default family, for a title with nothing in it
 			failed = true
 		}
 	}()

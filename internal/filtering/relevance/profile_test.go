@@ -33,6 +33,16 @@ func TestClassify_WholeWordPhrasesFirstRuleWins(t *testing.T) {
 		{"Account Executive", "non_tech", false},
 		{"Business Development Manager", "non_tech", false}, // "development" is not "developer"
 		{"Barista", "non_tech", false},
+		// A bare "engineer" is not a software role (found on held-out titles).
+		{"Site Engineer", "other_tech", false},
+		{"Rack Power Engineer", "other_tech", false},
+		{"PCB Layout Engineer", "other_tech", false},
+		{"Field Deploy Engineer", "other_tech", false},
+		{"Technical Services Engineer", "other_tech", false},
+		{"Business Value Engineer", "other_tech", false},
+		{"Social Media Manager, Developer Community", "non_tech", false},
+		{"Python Engineer", "software_engineering", true},
+		{"Mobile Architect", "software_engineering", true},
 		{"", "non_tech", false},
 		{"Ingénieur Logiciel Backend", "software_engineering", true}, // accents fold
 	} {

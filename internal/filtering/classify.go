@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/filtering/geo"
 )
@@ -51,6 +52,23 @@ func IsBoardSource(source string) bool { return boardSources[source] }
 // a city, not a statement about the whole country.
 var cityStateCountries = map[string]bool{"SG": true, "HK": true, "MO": true, "MC": true, "VA": true}
 
+const (
+	maxTitleBytes       = 500
+	maxLocationBytes    = 2000
+	maxDescriptionBytes = 200_000
+)
+
+// capText cuts s to at most n bytes, at a character boundary.
+func capText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
 // tzMaxDistance is how many hours a required time zone may be from the
 // target's before working hours stop overlapping enough.
 const tzMaxDistance = 4.0
@@ -77,6 +95,10 @@ func decided(status Status, conf float64, basis Basis, reason string, ev ...Evid
 // Classify decides whether a candidate in the target country could take the
 // job, from the location, the title and the description.
 func (c *Classifier) Classify(in Input) Verdict {
+	// A posting is a few kilobytes; nothing past these limits is a posting.
+	in.Title = capText(in.Title, maxTitleBytes)
+	in.Location = capText(in.Location, maxLocationBytes)
+	in.Description = capText(in.Description, maxDescriptionBytes)
 	loc := analyzeLocation(in.Location)
 	desc := plainText(in.Description)
 	board := boardSources[in.Source]
@@ -112,9 +134,7 @@ func (c *Classifier) decide(in Input, loc location, desc string, board bool) *re
 	if loc.inTarget(c.Target) {
 		return decided(Eligible, 0.95, BasisLocalEthiopia, "the job is located in Ethiopia", locEv)
 	}
-	if in.Market == "ethiopia" && !board && !loc.hasScope() {
-		return decided(Eligible, 0.75, BasisLocalEthiopia, "listed in the Ethiopian market with no place elsewhere", Evidence{Field: "market", Text: "ethiopia"})
-	}
+	marketLocal := in.Market == "ethiopia" && !board && !loc.hasScope()
 
 	// Signals from the text around the location.
 	sigs := scanDescription(desc)
@@ -139,6 +159,9 @@ func (c *Classifier) decide(in Input, loc location, desc string, board bool) *re
 		kept = append(kept, p)
 	}
 	pos = kept
+	if marketLocal && len(neg) == 0 {
+		return decided(Eligible, 0.75, BasisLocalEthiopia, "listed in the Ethiopian market with no place elsewhere", Evidence{Field: "market", Text: "ethiopia"})
+	}
 	// A time-zone statement does not widen a list of places that leaves the
 	// target out.
 	if in, _ := loc.includes(c.Target); loc.hasScope() && !in {

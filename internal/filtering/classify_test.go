@@ -88,7 +88,7 @@ func TestPolicies(t *testing.T) {
 		{"P14 nothing at all", ats("", "unknown", ""), Uncertain, BasisNoSignal, ""},
 		// P15 territories and US-state locations
 		{"P15 remote in a US state", ats("Remote - TX", "remote", "x"), Ineligible, BasisRestrictedPlaces, ""},
-		{"P15 territory in the title", Input{Source: "greenhouse", Title: "Channel Partner Sales Executive, UKI", Location: "Home based - EMEA", RemoteType: "unknown", Description: "x"}, Ineligible, BasisRestrictedPlaces, ""},
+		{"P15 territory in the title against a permissive tag is a conflict", Input{Source: "greenhouse", Title: "Channel Partner Sales Executive, UKI", Location: "Home based - EMEA", RemoteType: "unknown", Description: "x"}, Uncertain, BasisConflict, ""},
 		// P16 title qualifiers
 		{"P16 (US based) in the title", Input{Source: "workingnomads", Title: "Support Engineer (US based)", Location: "Worldwide", RemoteType: "remote", Description: "x"}, Ineligible, BasisRestrictedPlaces, "(US based)"},
 		{"P16 Based in London", Input{Source: "jobicy", Title: "Account Executive - Based in London or Home Counties", Location: "EMEA", RemoteType: "remote", Description: "x"}, Ineligible, BasisRestrictedPlaces, ""},

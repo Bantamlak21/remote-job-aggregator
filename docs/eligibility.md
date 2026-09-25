@@ -54,7 +54,7 @@ Postings say where a job can be done in three places, and the rules read all thr
 3. **An explicit permission** in the description beats a narrower location, but only when it is
    about this role: "candidates may be based in any geography", "Location: Worldwide". A company-wide
    statement ("we hire globally", "teams in 75+ countries", "work from anywhere for 6 weeks a year")
-   does not widen a country, and "anywhere within the UK" is a restriction.
+   does not widen a country, and "this role can be remote anywhere within the UK" is a restriction.
 4. **The location field.** For a job *board* (Himalayas, Remotive, Jobicy, We Work Remotely,
    Working Nomads, Remote OK) it is where applicants may come from: worldwide or a region that
    contains Ethiopia (EMEA, Africa, East Africa) is eligible; a list of countries or regions without
@@ -105,14 +105,21 @@ before the code (definitions, 20 edge-case policies, thresholds).
 
 | Set | What | Result |
 |---|---|---|
-| dev (325 real jobs, `internal/filtering/testdata/dev.jsonl`) | rules were built against it | accuracy 0.942; eligible precision 1.000, recall 1.000; ineligible precision 0.965, recall 0.952; uncertain share 0.151; role family accuracy 0.942, relevance precision 0.980, recall 0.990 |
-| audit (400 unseen jobs, a second labeler; bugs found here were fixed) | 160 predicted eligible, 150 ineligible, 90 uncertain, sampled by prediction | 0 of 174 gold-ineligible called eligible; eligible precision 0.973 (144 of 148); eligible recall 1.000 |
-| held-out (223 jobs, labels sealed from the builder) | scored once per version by an independent reviewer | see the reviewer's report (below) |
+| dev (325 real jobs, `internal/filtering/testdata/dev.jsonl`) | rules were built against it | accuracy 0.945; eligible precision 1.000, recall 1.000; ineligible precision 0.969, recall 0.952; uncertain share 0.154; role family accuracy 0.938, relevance precision 0.990, recall 0.980 |
+| audit (400 jobs the rules had not seen, a second labeler; bugs found here were fixed) | sampled by prediction: 160 predicted eligible, 150 ineligible, 90 uncertain | 0 of 174 gold-ineligible called eligible; eligible precision 0.973 (144 of 148), recall 1.000; ineligible precision 0.930 (159 of 171) |
+| held-out (223 jobs, labels sealed from the builder), reviewer round 1, before the fixes below | scored once per version by an independent reviewer on the full descriptions | eligible precision 0.958, recall 0.958; ineligible precision 0.942 (0.987 after the reviewer checked each disagreement against the full text), recall 0.967; uncertain share 0.193; accuracy 0.933 (0.964 adjudicated); 0 ineligible called eligible; every Ethiopia-located job eligible; relevance precision 0.853 (**failed the 0.90 bar**, fixed: a bare "engineer" is no longer a software role), recall 0.970 |
+
+Round 1 also ran 110 adversarial inputs and found 25 phrasings of a closed job that came out
+eligible ("the U.S.A." with periods, "all countries except Ethiopia", "US residents only", a list
+after a colon, a sentence broken across two lines...). All 25 are fixed and each is a row in
+`TestAdversarial_ClosedJobsAreNeverEligible`; other phrasings can exist, and non-English ones are
+not read at all.
 
 `TestDevGold_Eligibility` and `TestDevGold_RoleFamilyAndRelevance` re-run the dev scoring and fail
 under the rubric's bars (eligible precision 0.90, recall 0.85, ineligible precision 0.95, recall
 0.85, uncertain at most 0.25, at most 1 ineligible called eligible, relevance 0.90). `TestPolicies`
-has one row per rubric policy. Re-run: `go test ./internal/filtering/...`.
+has a row for each rubric policy the rules implement (P9, a clinical licence tied to a US state, is
+not implemented). Re-run: `go test ./internal/filtering/...`.
 
 What the numbers mean: in the corpus of 21,338 open jobs, 1,028 are in Ethiopia (all eligible), and
 of the 20,310 worldwide jobs 483 (2.4%) are open to Ethiopia, 5,685 (28%) are unclear and 14,142
@@ -137,8 +144,13 @@ Ethiopia (EMEA), 29 fit by time zone, 9 are explicitly permitted and 3 are "anyw
   Hungarian is read for its location field only.
 - **Sales territories and clearances** are covered where they name a place ("UKI", "Top Secret
   clearance"). A licence tied to a US state ("licensed to practice in Michigan") is not read yet.
-  A US-only job that says so in words the rules do not understand is `uncertain` or, rarely,
-  `eligible`.
+  A US-only job whose restriction is written in a shape the rules do not read, most likely another
+  language ("Sie müssen in Deutschland wohnen") or an unusual sentence, and whose location says
+  Worldwide or EMEA, comes out `eligible`. That is the costly error, so it is the one the tests and
+  the reviewer attack first.
+- **Stored verdicts are served until they are recomputed.** After a rules change or a job edit the
+  API keeps the old verdict until `aggregator classify` runs (`ingest` runs it), so a job never
+  flips to "unclassified" in between.
 - **A public "wrong label?" button is not built.** It needs an unauthenticated write endpoint, which
   needs auth or rate limiting first. Until then, corrections become new dev cases by hand.
 - **The API default shows every job.** The frozen rubric proposed an "eligible only" default; the

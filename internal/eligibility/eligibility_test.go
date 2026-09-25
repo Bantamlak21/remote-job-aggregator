@@ -303,3 +303,24 @@ func TestJobEligibility_CascadesWithItsJobAndRejectsBadValues(t *testing.T) {
 		t.Errorf("%d verdicts left after their job was deleted", n)
 	}
 }
+
+func TestSave_ReportsAWriteThatFailsInsteadOfPretendingItSucceeded(t *testing.T) {
+	f := newFixture(t, "Acme", false)
+	f.add(t, "1", "Backend Engineer", "Worldwide", "remote", "x")
+	var id int64
+	if err := f.db.Pool.QueryRow(context.Background(), `SELECT id FROM jobs`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	// A confidence above 1 breaks the table's CHECK: the batch must fail, and nothing of it may be stored.
+	err := eligibility.NewStore(f.db.Pool).Save(context.Background(), []eligibility.Row{
+		{JobID: id, Target: "ET", Version: filtering.Version, ContentHash: "h", Verdict: filtering.Verdict{Status: filtering.Eligible, Confidence: 1.5, Basis: filtering.BasisWorldwide}, Role: relevance.Result{Family: "non_tech"}},
+	})
+	if err == nil {
+		t.Fatal("Save() of a row that violates the table's constraints returned no error")
+	}
+	var n int
+	_ = f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM job_eligibility`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d rows stored from a failed batch", n)
+	}
+}
