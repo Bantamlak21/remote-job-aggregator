@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats/page"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 var fixedNow = time.Date(2026, 9, 24, 16, 0, 0, 0, time.UTC)
@@ -345,6 +346,16 @@ func TestJobID(t *testing.T) {
 		if id, _ := jobID(tc.slug); id != tc.id {
 			t.Errorf("jobID(%q) = %q, want %q", tc.slug, id, tc.id)
 		}
+	}
+}
+
+// Compile-time and value check: without this, losing the method would put
+// every Ethiojobs employer in the worldwide list with no test failing.
+var _ market.Provider = (*Collector)(nil)
+
+func TestCollectorIsInTheEthiopianMarket(t *testing.T) {
+	if got := newCollector(&fakePages{}, 0).Market(); got != market.Ethiopia {
+		t.Errorf("Market() = %q, want %q", got, market.Ethiopia)
 	}
 }
 

@@ -28,7 +28,8 @@ func NewMockRepository() *MockRepository {
 	jobs := fixtureJobs()
 	for i := range jobs {
 		// The fixtures are illustrative remote roles at well-known companies:
-		// all of them belong to the worldwide list.
+		// all of them belong to the worldwide list (so in mock mode the
+		// Ethiopian list is empty; the mock has no Ethiopian fixtures).
 		if jobs[i].Market == "" {
 			jobs[i].Market = market.Worldwide
 		}

@@ -8,11 +8,11 @@ ALTER TABLE target_companies
     ADD COLUMN market TEXT NOT NULL DEFAULT 'worldwide'
         CHECK (market IN ('ethiopia', 'worldwide'));
 
--- Data step: everything registered before this migration that is not an ATS
--- board came from the Ethiopian priority list or the Ethiopian sources, and
--- so did any target of a priority company. Greenhouse boards of other
--- companies stay worldwide.
-UPDATE target_companies t
+-- Data step: the market follows the source. Everything registered before this
+-- migration that is not an ATS board (feed, careers-site, search, ethiojobs,
+-- linkedin) came from the Ethiopian priority list or the Ethiopian sources.
+-- ATS boards (Greenhouse, Lever, Ashby) stay worldwide, whichever company
+-- owns them.
+UPDATE target_companies
 SET market = 'ethiopia'
-WHERE t.ats_provider IN ('feed', 'careers-site', 'search', 'ethiojobs', 'linkedin')
-   OR EXISTS (SELECT 1 FROM companies c WHERE c.id = t.company_id AND c.is_priority);
+WHERE ats_provider IN ('feed', 'careers-site', 'search', 'ethiojobs', 'linkedin');

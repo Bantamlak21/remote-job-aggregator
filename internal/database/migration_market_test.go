@@ -8,8 +8,9 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-// 000004 puts every pre-existing non-ATS target, and every target of a
-// priority company, in the Ethiopian market; other ATS boards stay worldwide.
+// 000004 puts every pre-existing non-ATS target in the Ethiopian market; ATS
+// boards stay worldwide, even those of a priority company (the market follows
+// the source, not the company).
 func TestMigration000004_AssignsTheMarketOfExistingTargets(t *testing.T) {
 	url := testDatabaseURL(t)
 	ctx := context.Background()
@@ -41,7 +42,7 @@ func TestMigration000004_AssignsTheMarketOfExistingTargets(t *testing.T) {
 	}
 	airbnb, eth := company("Airbnb", false), company("EthSwitch", true)
 	target(airbnb, "greenhouse", "airbnb")
-	target(eth, "greenhouse", "ethswitch") // a priority company's board: Ethiopian
+	target(eth, "greenhouse", "ethswitch") // a priority company's ATS board: still worldwide
 	target(eth, "search", "EthSwitch")
 	target(eth, "feed", "https://ethswitch.example/feed")
 	target(eth, "careers-site", "https://ethswitch.example/jobs")
@@ -54,7 +55,7 @@ func TestMigration000004_AssignsTheMarketOfExistingTargets(t *testing.T) {
 
 	want := map[string]string{
 		"greenhouse/airbnb":                           "worldwide",
-		"greenhouse/ethswitch":                        "ethiopia",
+		"greenhouse/ethswitch":                        "worldwide",
 		"search/EthSwitch":                            "ethiopia",
 		"feed/https://ethswitch.example/feed":         "ethiopia",
 		"careers-site/https://ethswitch.example/jobs": "ethiopia",

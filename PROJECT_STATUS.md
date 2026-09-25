@@ -794,7 +794,8 @@ remote companies on the main page. Migration `000004` adds `target_companies.mar
 `?market=` filter; the frontend has `/` (worldwide) and `/ethiopia` (header tabs), and the
 "Ethiopian tech companies only" toggle exists only on the Ethiopian page. Details:
 [docs/fresh-jobs.md](docs/fresh-jobs.md#markets-ethiopian-category-and-worldwide-main-page).
-On the dev database after migrating: 847 Ethiopian jobs, 108 worldwide (Greenhouse only).
+Before the worldwide sources land, the worldwide list holds only the Greenhouse boards (GitLab,
+Figma, Airbnb, Discord); everything else is Ethiopian.
 
 ## 3. Work In Progress
 

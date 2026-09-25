@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 )
 
@@ -407,6 +408,14 @@ func TestFreshCollect_RefusesAnInvalidConfigBeforeSpendingAnything(t *testing.T)
 	c := NewFresh(f, FreshConfig{Keywords: []string{`"quoted"`}, Pages: 1}, NewBudget(5), "search", discardLogger())
 	if _, err := c.Collect(context.Background()); err == nil || len(f.calls) != 0 {
 		t.Errorf("err = %v, searches = %d; want a config error and no search", err, len(f.calls))
+	}
+}
+
+var _ market.Provider = (*FreshClient)(nil)
+
+func TestFreshClient_IsInTheEthiopianMarket(t *testing.T) {
+	if got := newFresh(&fakePages{}, 1, 1, "a").Market(); got != market.Ethiopia {
+		t.Errorf("Market() = %q, want %q", got, market.Ethiopia)
 	}
 }
 

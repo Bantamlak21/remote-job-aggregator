@@ -296,7 +296,7 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 		t.Fatalf("third MigrateDownStep() failed: %v", err)
 	}
 	if priorityColumnExists() {
-		t.Error("companies.is_priority still exists after the second MigrateDownStep()")
+		t.Error("companies.is_priority still exists after the third MigrateDownStep()")
 	}
 	if !tableExists() {
 		t.Error("table \"jobs\" vanished after three MigrateDownStep() calls; 000001 must still be applied")

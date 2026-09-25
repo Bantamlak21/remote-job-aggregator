@@ -11,6 +11,7 @@ import (
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ats"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
 )
 
 // The 25 companies exactly as Bantamlak listed them. The shipped config
@@ -243,6 +244,12 @@ func TestSeed_RegistersCompanyPriorityAndEverySource(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("targets registered:\n got  %+v\n want %+v", got, want)
+	}
+	// Every source of an Ethiopian priority company belongs to the Ethiopian list.
+	for _, p := range targets.params {
+		if p.Market != market.Ethiopia {
+			t.Errorf("target %s/%s seeded with market %q, want %q", p.ATSProvider, p.ExternalBoardID, p.Market, market.Ethiopia)
+		}
 	}
 }
 
