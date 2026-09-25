@@ -12,8 +12,9 @@ coverage to expect, and how to run and change it.
 - `GET /api/v1/jobs` is sorted newest first, priority or not. Each job carries `is_priority`.
   `?priority=true` returns only priority jobs. Contract: [api.md](api.md).
 - The web UI (`remote-job-aggregator-web`) shows an "Ethiopian company" badge and a violet card
-  outline on these jobs, and an "Ethiopian tech companies only" toggle next to the other filters
-  on the Ethiopia page (the toggle does not exist on the worldwide main page). All of their
+  outline on these jobs. They appear only on the Ethiopia page, never on the worldwide main
+  page, and the page offers no filter narrowing to them (the "Ethiopian tech companies only"
+  checkbox was removed; the API's `?priority=true` remains). All of their
   sources are in the Ethiopian market; see
   [fresh-jobs.md](fresh-jobs.md#markets-ethiopian-category-and-worldwide-main-page).
 

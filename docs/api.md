@@ -70,7 +70,7 @@ Query params (all optional):
 | `company` | string | Exact company name match |
 | `tag` | string | Job must have this tag |
 | `market` | string | `ethiopia` or `worldwide` returns only that list; omitted returns both. Anything else is a `400` |
-| `priority` | string | `true` returns only jobs from priority (Ethiopian) companies. `false` is the same as omitting the parameter (it does **not** mean "only non-priority"), so a UI toggle can send its state verbatim. Anything else is a `400` |
+| `priority` | string | `true` returns only jobs from priority (Ethiopian) companies. `false` is the same as omitting the parameter (it does **not** mean "only non-priority"), so a UI toggle can send its state verbatim. The web UI does not use this parameter (it splits by `market`); it stays for API clients. Anything else is a `400` |
 | `page` | int | Default `1` |
 | `page_size` | int | Default `20`, max `100` |
 

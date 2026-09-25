@@ -791,8 +791,10 @@ limits: [docs/fresh-jobs.md](docs/fresh-jobs.md). Summary:
 Requested by Bantamlak: Ethiopian jobs listed separately in an Ethiopian category, worldwide
 remote companies on the main page. Migration `000004` adds `target_companies.market`
 (`ethiopia` | `worldwide`, default `worldwide`); the API adds `market` to every job and a
-`?market=` filter; the frontend has `/` (worldwide) and `/ethiopia` (header tabs), and the
-"Ethiopian tech companies only" toggle exists only on the Ethiopian page. Details:
+`?market=` filter; the frontend has `/` (worldwide) and `/ethiopia` (header tabs). Each page
+asks for its own list only, so an Ethiopian job appears only on the Ethiopian page and never on
+the worldwide one; the former "Ethiopian tech companies only" checkbox was removed from the UI
+(the API's `?priority=true` remains). Details:
 [docs/fresh-jobs.md](docs/fresh-jobs.md#markets-ethiopian-category-and-worldwide-main-page).
 The worldwide list started with only the Greenhouse boards (GitLab, Figma, Airbnb, Discord).
 
