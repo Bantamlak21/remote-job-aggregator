@@ -29,7 +29,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
 
-const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|discover-boards [names-file|-] [--from-boards] [--limit=N] [--recheck [--apply]]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b] [--force]|serve>"
+const usage = "usage: aggregator <run|migrate-up|migrate-down --yes [--all]|migrate-force <version>|discover [seed-file]|search-discover [company-names-file]|discover-boards [names-file|-] [--from-boards] [--limit=N] [--recheck [--apply]]|seed-priority [company-list-file]|priority-report|ingest [--providers=a,b] [--force]|classify [--reclassify]|serve>"
 
 const (
 	defaultSeedFile         = "configs/seed_companies.json"
@@ -112,7 +112,7 @@ func run(ctx context.Context, args []string) error {
 
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "discover-boards", "seed-priority", "priority-report", "ingest", "serve":
+	case "run", "migrate-up", "migrate-down", "migrate-force", "discover", "search-discover", "discover-boards", "seed-priority", "priority-report", "ingest", "classify", "serve":
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q: %s", cmd, usage)
@@ -160,6 +160,8 @@ func run(ctx context.Context, args []string) error {
 		return runPriorityReport(ctx, cfg, logger, rest)
 	case "ingest":
 		return runIngest(ctx, cfg, logger, rest)
+	case "classify":
+		return runClassify(ctx, cfg, logger, rest)
 	case "serve":
 		return runServe(ctx, cfg, logger, rest)
 	}
@@ -536,6 +538,13 @@ func runIngest(ctx context.Context, cfg *config.Config, logger *slog.Logger, arg
 	}
 	reportErr := reportIngestionResults(logger, results)
 	logPriorityCoverage(ctx, logger, db)
+	// What was just stored gets its eligibility verdict. A failure here does
+	// not fail the ingestion (the jobs are safely stored; `classify` retries).
+	if st, err := classifyJobs(ctx, cfg, logger, db, false); err != nil {
+		logger.Warn("classifying the ingested jobs failed; run `aggregator classify` to retry", "error", err, "classified", st.Classified)
+	} else if st.Classified > 0 {
+		logger.Info("classified the ingested jobs", "classified", st.Classified, "eligible", st.Eligible, "ineligible", st.Ineligible, "uncertain", st.Uncertain)
+	}
 	return reportErr
 }
 

@@ -16,7 +16,7 @@ func clearAll(t *testing.T) {
 		"APP_ENV", "DATABASE_URL", "DB_MAX_OPEN_CONNS", "DB_MIN_CONNS",
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
-		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY", "SEARCH_MAX_QUERIES_PER_RUN", "JOB_MAX_AGE_DAYS", "ETHIOJOBS_MAX_PAGES", "HIMALAYAS_MAX_PAGES",
+		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY", "SEARCH_MAX_QUERIES_PER_RUN", "JOB_MAX_AGE_DAYS", "ETHIOJOBS_MAX_PAGES", "HIMALAYAS_MAX_PAGES", "RELEVANCE_PROFILE",
 	} {
 		t.Setenv(key, "")
 	}
@@ -686,5 +686,18 @@ func TestLoad_HimalayasMaxPagesDefaultsOverridesAndValidates(t *testing.T) {
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HIMALAYAS_MAX_PAGES") {
 			t.Errorf("HIMALAYAS_MAX_PAGES=%q: err = %v, want a validation error naming it", bad, err)
 		}
+	}
+}
+
+func TestLoad_RelevanceProfileDefaultsToTheBuiltInAndReadsAPath(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	cfg, err := Load()
+	if err != nil || cfg.Filtering.RelevanceProfile != "" {
+		t.Fatalf("default: profile = %q, err = %v; want empty (the built-in profile)", cfg.Filtering.RelevanceProfile, err)
+	}
+	t.Setenv("RELEVANCE_PROFILE", "  /etc/aggregator/designer.json ")
+	if cfg, err = Load(); err != nil || cfg.Filtering.RelevanceProfile != "/etc/aggregator/designer.json" {
+		t.Fatalf("override: profile = %q, err = %v", cfg.Filtering.RelevanceProfile, err)
 	}
 }

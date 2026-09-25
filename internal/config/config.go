@@ -241,6 +241,16 @@ type Config struct {
 	Ingestion IngestionConfig
 	Search    SearchConfig
 	API       APIConfig
+	Filtering FilteringConfig
+}
+
+// FilteringConfig configures job classification (internal/filtering).
+type FilteringConfig struct {
+	// RelevanceProfile is the path of a JSON role profile (which families a
+	// title falls in and which count as relevant); empty means the built-in
+	// one, which counts software, data, DevOps and security roles as relevant.
+	// See internal/filtering/relevance/profile.json for the format.
+	RelevanceProfile string
 }
 
 // Load reads and validates configuration from the process environment.
@@ -453,6 +463,9 @@ func Load() (*Config, error) {
 			Timeout:           ingestionTimeout,
 			EthiojobsMaxPages: ethiojobsMaxPages,
 			HimalayasMaxPages: himalayasMaxPages,
+		},
+		Filtering: FilteringConfig{
+			RelevanceProfile: strings.TrimSpace(getEnv("RELEVANCE_PROFILE", "")),
 		},
 		Search: SearchConfig{
 			SerperAPIKey:     serperAPIKey,

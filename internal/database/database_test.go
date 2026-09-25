@@ -279,7 +279,32 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 		return exists
 	}
 
-	// Step 0 undoes only the latest migration (000005's collector_runs table).
+	eligibilityTableExists := func() bool {
+		t.Helper()
+		var exists bool
+		if err := db.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'job_eligibility')`,
+		).Scan(&exists); err != nil {
+			t.Fatalf("checking table existence: %v", err)
+		}
+		return exists
+	}
+
+	// Step 0 undoes only the latest migration (000006's job_eligibility table).
+	if !eligibilityTableExists() {
+		t.Fatal("job_eligibility does not exist after MigrateUp()")
+	}
+	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
+		t.Fatalf("MigrateDownStep() failed: %v", err)
+	}
+	if eligibilityTableExists() {
+		t.Error("job_eligibility still exists after the first MigrateDownStep()")
+	}
+	if !runsTableExists() || !tableExists() {
+		t.Error("an earlier migration's schema vanished after one MigrateDownStep(); only the latest should be undone")
+	}
+
+	// Step 1 undoes 000005's collector_runs table.
 	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
 		t.Fatalf("MigrateDownStep() failed: %v", err)
 	}
@@ -290,7 +315,7 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 		t.Error("an earlier migration's schema vanished after one MigrateDownStep(); only the latest should be undone")
 	}
 
-	// Step 1 undoes 000004's market column; the earlier schema must survive it.
+	// Step 2 undoes 000004's market column; the earlier schema must survive it.
 	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
 		t.Fatalf("second MigrateDownStep() failed: %v", err)
 	}
@@ -301,7 +326,7 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 		t.Error("an earlier migration's schema vanished after one MigrateDownStep(); only the latest should be undone")
 	}
 
-	// Step 2 undoes 000003's expires_at column.
+	// Step 3 undoes 000003's expires_at column.
 	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
 		t.Fatalf("third MigrateDownStep() failed: %v", err)
 	}
@@ -312,7 +337,7 @@ func TestMigrateDownStep_RollsBackOneVersion(t *testing.T) {
 		t.Error("an earlier migration's schema vanished after three MigrateDownStep() calls")
 	}
 
-	// Step 3 undoes 000002's is_priority column.
+	// Step 4 undoes 000002's is_priority column.
 	if err := database.MigrateDownStep(context.Background(), url, migrations.FS); err != nil {
 		t.Fatalf("fourth MigrateDownStep() failed: %v", err)
 	}
@@ -428,7 +453,7 @@ func TestMigrateDownStep_ReturnsErrorOnAlreadyCanceledContext(t *testing.T) {
 // force the schema_migrations row use it so they leave the schema state
 // consistent with the tables that actually exist; bump it with every new
 // migration.
-const latestMigrationVersion = 5
+const latestMigrationVersion = 6
 
 func TestMigrateForce_ClearsDirtyState(t *testing.T) {
 	url := testDatabaseURL(t)

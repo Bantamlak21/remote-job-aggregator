@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,11 +35,47 @@ type jobSummaryDTO struct {
 	Tags           []string `json:"tags"`
 	PostedAt       string   `json:"posted_at"`
 	ApplicationURL string   `json:"application_url"`
+	// Eligibility and Role are null until the job has been classified.
+	Eligibility *eligibilityDTO `json:"eligibility"`
+	Role        *roleDTO        `json:"role"`
+}
+
+// eligibilityDTO is the verdict on whether a candidate in Ethiopia could take
+// the job. The whole object is null for a job that has not been classified yet.
+type eligibilityDTO struct {
+	Status          string   `json:"status"` // eligible | ineligible | uncertain
+	Confidence      float64  `json:"confidence"`
+	Basis           string   `json:"basis"`
+	Restrictions    []string `json:"restrictions"`
+	HoursConstraint *string  `json:"hours_constraint"`
+}
+
+// eligibilityDetailDTO adds what a single-job response carries: why, and the
+// text the verdict rests on.
+type eligibilityDetailDTO struct {
+	eligibilityDTO
+	Reasons           []string      `json:"reasons"`
+	Evidence          []evidenceDTO `json:"evidence"`
+	Locations         []string      `json:"locations"`
+	ClassifierVersion int           `json:"classifier_version"`
+}
+
+type evidenceDTO struct {
+	Field string `json:"field"`
+	Text  string `json:"text"`
+}
+
+// roleDTO is what kind of role the job is (from its title).
+type roleDTO struct {
+	Family   string `json:"family"`
+	Relevant bool   `json:"relevant"`
 }
 
 type jobDetailDTO struct {
 	jobSummaryDTO
 	Description string `json:"description"`
+	// Eligibility shadows the summary's: the detail carries the reasons.
+	Eligibility *eligibilityDetailDTO `json:"eligibility"`
 }
 
 type listJobsResponse struct {
@@ -70,11 +108,48 @@ func toSummaryDTO(j job.Job) jobSummaryDTO {
 		Tags:           j.Tags,
 		PostedAt:       j.PostedAt.Format(time.RFC3339),
 		ApplicationURL: j.ApplicationURL,
+		Eligibility:    toEligibilityDTO(j.Eligibility),
+		Role:           toRoleDTO(j.Role),
 	}
 }
 
+func toEligibilityDTO(e *job.Eligibility) *eligibilityDTO {
+	if e == nil {
+		return nil
+	}
+	dto := &eligibilityDTO{Status: e.Status, Confidence: e.Confidence, Basis: e.Basis, Restrictions: nonNil(e.Restrictions)}
+	if e.HoursConstraint != "" {
+		h := e.HoursConstraint
+		dto.HoursConstraint = &h
+	}
+	return dto
+}
+
+func toRoleDTO(r *job.Role) *roleDTO {
+	if r == nil {
+		return nil
+	}
+	return &roleDTO{Family: r.Family, Relevant: r.Relevant}
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 func toDetailDTO(j job.Job) jobDetailDTO {
-	return jobDetailDTO{jobSummaryDTO: toSummaryDTO(j), Description: j.Description}
+	d := jobDetailDTO{jobSummaryDTO: toSummaryDTO(j), Description: j.Description}
+	if e := j.Eligibility; e != nil {
+		det := &eligibilityDetailDTO{eligibilityDTO: *toEligibilityDTO(e), Reasons: nonNil(e.Reasons), Locations: nonNil(e.Locations),
+			Evidence: []evidenceDTO{}, ClassifierVersion: e.ClassifierVersion}
+		for _, ev := range e.Evidence {
+			det.Evidence = append(det.Evidence, evidenceDTO{Field: ev.Field, Text: ev.Text})
+		}
+		d.Eligibility = det
+	}
+	return d
 }
 
 // listJobsHandler handles GET /api/v1/jobs.
@@ -132,6 +207,8 @@ func getJobHandler(repo job.Repository, logger *slog.Logger) http.HandlerFunc {
 // Any parameter present but invalid is a 400 — never silently ignored
 // or clamped, so a typo'd remote_type doesn't quietly return every job
 // scoped mistakenly.
+var roleFamilyRe = regexp.MustCompile(`^[a-z_]{1,40}$`)
+
 func parseFilter(q url.Values) (job.Filter, error) {
 	filter := job.Filter{
 		Query:    strings.TrimSpace(q.Get("q")),
@@ -181,6 +258,40 @@ func parseFilter(q url.Values) (job.Filter, error) {
 			return job.Filter{}, fmt.Errorf("market must be %s or %s (got %q)", market.Ethiopia, market.Worldwide, v)
 		}
 		filter.Market = m
+	}
+
+	// "eligibility" is a comma-separated list of statuses to keep (eligible,
+	// ineligible, uncertain, unclassified); a job matching any of them stays.
+	if v := q.Get("eligibility"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if !job.ValidEligibilityFilter(part) {
+				return job.Filter{}, fmt.Errorf("eligibility must be a comma-separated list of %s, %s, %s or %s (got %q)",
+					job.EligibilityEligible, job.EligibilityIneligible, job.EligibilityUncertain, job.EligibilityUnclassified, part)
+			}
+			if !slices.Contains(filter.Eligibility, part) {
+				filter.Eligibility = append(filter.Eligibility, part)
+			}
+		}
+	}
+
+	// "relevant=true" keeps roles the job seeker's profile counts as relevant;
+	// "relevant=false" is the same as omitting it (like priority).
+	if v := q.Get("relevant"); v != "" {
+		switch v {
+		case "true":
+			filter.RelevantOnly = true
+		case "false":
+		default:
+			return job.Filter{}, fmt.Errorf("relevant must be true or false (got %q)", v)
+		}
+	}
+
+	if v := q.Get("role_family"); v != "" {
+		if !roleFamilyRe.MatchString(v) {
+			return job.Filter{}, fmt.Errorf("role_family must be lower-case letters and underscores (got %q)", v)
+		}
+		filter.RoleFamily = v
 	}
 
 	if v := q.Get("page"); v != "" {

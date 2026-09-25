@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -399,20 +400,21 @@ func (s *Store) MoveJob(ctx context.Context, source, sourceJobID string, targetC
 	return nil
 }
 
-// listMarketExpr is the market a job is listed under. It is its target's
+// MarketExpr is the market a job is listed under. It is its target's
 // market, except that a job of a priority (Ethiopian) company is always in the
 // Ethiopian list, whatever source found it: an Ethiopian company's job that a
 // worldwide remote board carries appears in the Ethiopian section only, never
 // on the worldwide main page. Needs the jobs' target (t) and company (c) joins.
-const listMarketExpr = `(CASE WHEN c.is_priority THEN 'ethiopia' ELSE t.market END)`
+const MarketExpr = `(CASE WHEN c.is_priority THEN 'ethiopia' ELSE t.market END)`
 
 // jobColumnsForAPI is the column list List/Get select, in the order
 // scanJobSummary expects. Only 'open' jobs are ever exposed through the
 // public Repository interface — a removed/closed job is not something
 // a job-seeker should be shown, even if it is still in the table for
 // ingestion's own history/audit purposes.
-const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, ` + listMarketExpr + `, j.source, j.remote_type, j.employment_type,
-	j.location_raw, COALESCE(j.published_at, j.first_seen_at) AS posted_at, j.application_url`
+const jobColumnsForAPI = `j.id, j.title, c.name, c.is_priority, ` + MarketExpr + `, j.source, j.remote_type, j.employment_type,
+	j.location_raw, COALESCE(j.published_at, j.first_seen_at) AS posted_at, j.application_url,
+	e.status, e.confidence::float8, e.basis, e.restrictions::text, e.hours_constraint, e.role_family, e.relevant`
 
 // List returns open jobs matching filter, newest-first (ties broken by
 // id descending), paginated. Tags is always an empty slice: the jobs
@@ -458,7 +460,16 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 		where += " AND c.is_priority"
 	}
 	if filter.Market != "" {
-		where += " AND " + listMarketExpr + " = " + arg(string(filter.Market))
+		where += " AND " + MarketExpr + " = " + arg(string(filter.Market))
+	}
+	if len(filter.Eligibility) > 0 {
+		where += " AND COALESCE(e.status, 'unclassified') = ANY(" + arg(filter.Eligibility) + ")"
+	}
+	if filter.RelevantOnly {
+		where += " AND e.relevant"
+	}
+	if filter.RoleFamily != "" {
+		where += " AND e.role_family = " + arg(filter.RoleFamily)
 	}
 	where += s.maxAgeClause(arg)
 	if q := strings.TrimSpace(filter.Query); q != "" {
@@ -528,9 +539,10 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 // listFromClause joins a job to its company (name, priority flag) and to the
 // target it was collected through (market).
 const listFromClause = ` FROM jobs j JOIN companies c ON c.id = j.company_id
-	JOIN target_companies t ON t.id = j.target_company_id`
+	JOIN target_companies t ON t.id = j.target_company_id
+	LEFT JOIN job_eligibility e ON e.job_id = j.id`
 
-const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description` + listFromClause + `
+const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description, e.reasons::text, e.evidence::text, e.detected_locations::text, e.classifier_version` + listFromClause + `
 	WHERE j.status = 'open' AND j.id = $1` + notExpiredClause
 
 // Get returns the open job with the given id, or ErrNotFound — both for
@@ -552,6 +564,10 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		employmentType string
 		locationRaw    *string
 		description    *string
+		el             eligibilityCols
+		reasons, evid  *string
+		locs           *string
+		version        *int
 	)
 	query, args := getJobByIDQuery, []any{numericID}
 	if s.maxAge > 0 {
@@ -562,7 +578,8 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 	}
 	err = s.pool.QueryRow(ctx, query, args...).Scan(
 		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &j.Source, &remoteType, &employmentType,
-		&locationRaw, &j.PostedAt, &j.ApplicationURL, &description,
+		&locationRaw, &j.PostedAt, &j.ApplicationURL, &el.status, &el.confidence, &el.basis, &el.restrictions, &el.hours, &el.family, &el.relevant,
+		&description, &reasons, &evid, &locs, &version,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -581,7 +598,79 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		j.Description = *description
 	}
 	j.Tags = []string{}
+	j.Eligibility, j.Role = el.build()
+	if j.Eligibility != nil {
+		j.Eligibility.Reasons = jsonStrings(reasons)
+		j.Eligibility.Locations = jsonStrings(locs)
+		j.Eligibility.Evidence = jsonEvidence(evid)
+		if version != nil {
+			j.Eligibility.ClassifierVersion = *version
+		}
+	}
 	return j, nil
+}
+
+// eligibilityCols are the job_eligibility columns of a LEFT JOIN: all nil for
+// a job with no verdict.
+type eligibilityCols struct {
+	status       *string
+	confidence   *float64
+	basis        *string
+	restrictions *string
+	hours        *string
+	family       *string
+	relevant     *bool
+}
+
+func (c eligibilityCols) build() (*Eligibility, *Role) {
+	if c.status == nil {
+		return nil, nil
+	}
+	el := &Eligibility{Status: *c.status, Restrictions: jsonStrings(c.restrictions), Reasons: []string{}, Locations: []string{}, Evidence: []EligibilityEvidence{}}
+	if c.confidence != nil {
+		el.Confidence = *c.confidence
+	}
+	if c.basis != nil {
+		el.Basis = *c.basis
+	}
+	if c.hours != nil {
+		el.HoursConstraint = *c.hours
+	}
+	role := &Role{}
+	if c.family != nil {
+		role.Family = *c.family
+	}
+	if c.relevant != nil {
+		role.Relevant = *c.relevant
+	}
+	return el, role
+}
+
+// jsonStrings decodes a JSONB array of strings; anything else is empty.
+func jsonStrings(s *string) []string {
+	out := []string{}
+	if s != nil {
+		_ = json.Unmarshal([]byte(*s), &out)
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+func jsonEvidence(s *string) []EligibilityEvidence {
+	var raw []struct {
+		Field string `json:"field"`
+		Text  string `json:"text"`
+	}
+	if s != nil {
+		_ = json.Unmarshal([]byte(*s), &raw)
+	}
+	out := make([]EligibilityEvidence, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, EligibilityEvidence{Field: r.Field, Text: r.Text})
+	}
+	return out
 }
 
 // scanJobSummaryWithTotal reads one row in jobColumnsForAPI order plus
@@ -594,10 +683,11 @@ func scanJobSummaryWithTotal(row pgx.Row) (Job, int, error) {
 		employmentType string
 		locationRaw    *string
 		total          int
+		el             eligibilityCols
 	)
 	err := row.Scan(
 		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &j.Source, &remoteType, &employmentType,
-		&locationRaw, &j.PostedAt, &j.ApplicationURL, &total,
+		&locationRaw, &j.PostedAt, &j.ApplicationURL, &el.status, &el.confidence, &el.basis, &el.restrictions, &el.hours, &el.family, &el.relevant, &total,
 	)
 	if err != nil {
 		return Job{}, 0, err
@@ -609,5 +699,6 @@ func scanJobSummaryWithTotal(row pgx.Row) (Job, int, error) {
 		j.RegionNote = *locationRaw
 	}
 	j.Tags = []string{}
+	j.Eligibility, j.Role = el.build()
 	return j, total, nil
 }

@@ -98,6 +98,54 @@ type Job struct {
 	PostedAt       time.Time
 	ApplicationURL string
 	Description    string
+	// Eligibility and Role are nil until the job has been classified.
+	Eligibility *Eligibility
+	Role        *Role
+}
+
+// Eligibility is the stored verdict on whether a candidate in Ethiopia could
+// take a job (see internal/filtering). A job that has not been classified yet
+// has no Eligibility at all (nil), which is different from "uncertain".
+type Eligibility struct {
+	Status          string   // "eligible", "ineligible" or "uncertain"
+	Confidence      float64  // 0..1
+	Basis           string   // what the verdict rests on: "local_ethiopia", "worldwide", ...
+	Restrictions    []string // limits found: "United States only"
+	HoursConstraint string   // "" unless an eligible job asks for far-off working hours
+	// The rest is filled by Get only.
+	Reasons           []string
+	Evidence          []EligibilityEvidence
+	Locations         []string
+	ClassifierVersion int
+}
+
+// EligibilityEvidence is a piece of the posting a verdict rests on.
+type EligibilityEvidence struct {
+	Field string // "location", "description", "title", "market"
+	Text  string
+}
+
+// Role is what kind of role a job is, from its title.
+type Role struct {
+	Family   string // "software_engineering", "data_ml", "devops_security", "product_design", "it_support", "other_tech", "non_tech"
+	Relevant bool   // whether the job seeker's profile counts the family as relevant
+}
+
+// Eligibility statuses, and the filter value for a job with no verdict yet.
+const (
+	EligibilityEligible     = "eligible"
+	EligibilityIneligible   = "ineligible"
+	EligibilityUncertain    = "uncertain"
+	EligibilityUnclassified = "unclassified"
+)
+
+// ValidEligibilityFilter reports whether s is a status a Filter may ask for.
+func ValidEligibilityFilter(s string) bool {
+	switch s {
+	case EligibilityEligible, EligibilityIneligible, EligibilityUncertain, EligibilityUnclassified:
+		return true
+	}
+	return false
 }
 
 // Pagination defaults and limits, shared between internal/api (which
@@ -126,8 +174,13 @@ type Filter struct {
 	Tag            string
 	PriorityOnly   bool          // true: only jobs from priority companies
 	Market         market.Market // "" means both lists
-	Page           int           // <= 0 means "use the default" (1)
-	PageSize       int           // <= 0 means "use the default" (20)
+	// Eligibility keeps only jobs whose verdict is one of these statuses
+	// ("unclassified" matches jobs with none); empty means no filter.
+	Eligibility  []string
+	RelevantOnly bool   // true: only jobs whose role family is relevant
+	RoleFamily   string // "" means any family
+	Page         int    // <= 0 means "use the default" (1)
+	PageSize     int    // <= 0 means "use the default" (20)
 }
 
 // ListResult is one page of List's matches, plus the total count across
