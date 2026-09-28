@@ -765,3 +765,36 @@ func scanJobSummaryWithTotal(row pgx.Row) (Job, int, error) {
 	j.Eligibility, j.Role = el.build()
 	return j, total, nil
 }
+
+// NotifyCandidate is the minimum the scheduler's keyword-notification tick
+// needs about a job: enough to match a keyword (Title) and to record
+// delivery (JobID, the raw database id notified_jobs stores -- see
+// migrations/000008_notifications.up.sql). Deliberately not job.Job: the
+// notification path never serves this to the public API and needs nothing
+// else about the job.
+type NotifyCandidate struct {
+	JobID int64
+	Title string
+}
+
+// RecentlyOpened returns every open job first seen at or after since --
+// "what's new since the last scheduler tick" for keyword notifications. Not
+// filtered by eligibility or market: a keyword subscription is a pure
+// interest filter, independent of the Ethiopia-eligibility the rest of the
+// site is built around.
+func (s *Store) RecentlyOpened(ctx context.Context, since time.Time) ([]NotifyCandidate, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, title FROM jobs WHERE status = 'open' AND first_seen_at >= $1`, since)
+	if err != nil {
+		return nil, fmt.Errorf("job: listing recently opened jobs: %w", err)
+	}
+	defer rows.Close()
+	var out []NotifyCandidate
+	for rows.Next() {
+		var c NotifyCandidate
+		if err := rows.Scan(&c.JobID, &c.Title); err != nil {
+			return nil, fmt.Errorf("job: scanning a recently opened job: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

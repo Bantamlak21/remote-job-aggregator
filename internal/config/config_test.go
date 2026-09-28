@@ -18,6 +18,7 @@ func clearAll(t *testing.T) {
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
 		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY", "SEARCH_MAX_QUERIES_PER_RUN", "JOB_MAX_AGE_DAYS", "ETHIOJOBS_MAX_PAGES", "HIMALAYAS_MAX_PAGES", "RELEVANCE_PROFILE",
 		"PUBLIC_BASE_URL", "AUTH_ENABLED", "AUTH_MAILER", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS", "COOKIE_SECURE", "COOKIE_SAMESITE", "CLIENT_IP_HEADER", "AUTH_MAX_LINKS_PER_HOUR",
+		"SCHEDULER_ENABLED", "SCHEDULER_INTERVAL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME",
 	} {
 		t.Setenv(key, "")
 	}
@@ -701,5 +702,118 @@ func TestLoad_RelevanceProfileDefaultsToTheBuiltInAndReadsAPath(t *testing.T) {
 	t.Setenv("RELEVANCE_PROFILE", "  /etc/aggregator/designer.json ")
 	if cfg, err = Load(); err != nil || cfg.Filtering.RelevanceProfile != "/etc/aggregator/designer.json" {
 		t.Fatalf("override: profile = %q, err = %v", cfg.Filtering.RelevanceProfile, err)
+	}
+}
+
+func TestLoad_SchedulerDefaultsToEnabledHourly(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if !cfg.Scheduler.Enabled {
+		t.Error("Scheduler.Enabled = false, want true by default")
+	}
+	if cfg.Scheduler.Interval != time.Hour {
+		t.Errorf("Scheduler.Interval = %s, want 1h by default", cfg.Scheduler.Interval)
+	}
+}
+
+func TestLoad_SchedulerOverridesRespected(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("SCHEDULER_ENABLED", "false")
+	t.Setenv("SCHEDULER_INTERVAL", "30m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.Scheduler.Enabled {
+		t.Error("Scheduler.Enabled = true, want false when SCHEDULER_ENABLED=false")
+	}
+	if cfg.Scheduler.Interval != 30*time.Minute {
+		t.Errorf("Scheduler.Interval = %s, want 30m", cfg.Scheduler.Interval)
+	}
+}
+
+func TestLoad_SchedulerRejectsInvalidValues(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	t.Setenv("SCHEDULER_ENABLED", "not-a-bool")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SCHEDULER_ENABLED") {
+		t.Errorf("SCHEDULER_ENABLED=not-a-bool: err = %v, want a validation error naming it", err)
+	}
+	t.Setenv("SCHEDULER_ENABLED", "")
+
+	for _, bad := range []string{"0", "-1h", "not-a-duration"} {
+		t.Setenv("SCHEDULER_INTERVAL", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SCHEDULER_INTERVAL") {
+			t.Errorf("SCHEDULER_INTERVAL=%q: err = %v, want a validation error naming it", bad, err)
+		}
+	}
+}
+
+func TestLoad_NotificationConfigDefaultsToUnconfigured(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.Notification.Configured() {
+		t.Error("Notification.Configured() = true, want false when TELEGRAM_BOT_TOKEN is not set")
+	}
+}
+
+func TestLoad_NotificationConfigOverridesRespected(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_BOT_USERNAME", "TestBot")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if !cfg.Notification.Configured() {
+		t.Error("Notification.Configured() = false, want true when TELEGRAM_BOT_TOKEN is set")
+	}
+	if cfg.Notification.TelegramBotUsername != "TestBot" {
+		t.Errorf("Notification.TelegramBotUsername = %q, want %q", cfg.Notification.TelegramBotUsername, "TestBot")
+	}
+}
+
+func TestLoad_TelegramBotTokenWithoutUsernameIsRejected(t *testing.T) {
+	clearAll(t)
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/jobs")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "TELEGRAM_BOT_USERNAME") {
+		t.Errorf("err = %v, want a validation error naming TELEGRAM_BOT_USERNAME", err)
+	}
+}
+
+func TestNotificationConfig_LogValueRedactsTheBotToken(t *testing.T) {
+	n := NotificationConfig{TelegramBotToken: "super-secret-token", TelegramBotUsername: "TestBot"}
+	got := n.LogValue().String()
+	if strings.Contains(got, "super-secret-token") {
+		t.Errorf("LogValue() = %q, leaked the bot token", got)
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Errorf("LogValue() = %q, want it to say REDACTED", got)
+	}
+}
+
+func TestNotificationConfig_LogValueOnUnconfiguredDoesNotClaimRedaction(t *testing.T) {
+	n := NotificationConfig{}
+	got := n.LogValue().String()
+	if strings.Contains(got, "REDACTED") {
+		t.Errorf("LogValue() = %q, an empty token should not be shown as REDACTED", got)
 	}
 }

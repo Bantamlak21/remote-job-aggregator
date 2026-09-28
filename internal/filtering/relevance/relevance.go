@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -92,14 +93,14 @@ func Parse(b []byte) (*Profile, error) {
 			return nil, fmt.Errorf("relevance: rule %d needs a family and at least one phrase", i)
 		}
 		for _, ph := range r.Any {
-			w := words(ph)
+			w := Words(ph)
 			if len(w) == 0 {
 				return nil, fmt.Errorf("relevance: rule %d (%s) has an empty phrase", i, r.Family)
 			}
 			r.any = append(r.any, w)
 		}
 		for _, ph := range r.Not {
-			if w := words(ph); len(w) > 0 {
+			if w := Words(ph); len(w) > 0 {
 				r.not = append(r.not, w)
 			}
 		}
@@ -109,7 +110,7 @@ func Parse(b []byte) (*Profile, error) {
 
 // Classify puts a job title in a family.
 func (p *Profile) Classify(title string) Result {
-	tw := words(title)
+	tw := Words(title)
 	for _, r := range p.Rules {
 		if hit := firstPhrase(tw, r.any); hit != "" && firstPhrase(tw, r.not) == "" {
 			return Result{Family: r.Family, Relevant: p.relevant[r.Family], Matched: hit}
@@ -137,10 +138,13 @@ func firstPhrase(tw []string, phrases [][]string) string {
 	return ""
 }
 
-// words folds a string (lower case, no accents) and splits it into words.
+// Words folds a string (lower case, no accents) and splits it into words.
 // "+" and "#" stay inside a word ("c++", "c#"); everything else that is not a
-// letter or digit separates words.
-func words(s string) []string {
+// letter or digit separates words. Exported for internal/notification's
+// keyword matcher, which needs the exact same tokenization Classify uses so
+// a keyword matches a title precisely when Classify would have matched the
+// same phrase.
+func Words(s string) []string {
 	t := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
 	if out, _, err := transform.String(t, s); err == nil {
 		s = out
@@ -148,4 +152,35 @@ func words(s string) []string {
 	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '+' && r != '#'
 	})
+}
+
+// ContainsPhrase reports whether phrase appears in tw (a title's Words) as a
+// run of whole words -- "java" must not match "javascript".
+func ContainsPhrase(tw []string, phrase string) bool {
+	return firstPhrase(tw, [][]string{Words(phrase)}) != ""
+}
+
+// RelevantVocabulary returns the deduped, sorted phrases from the built-in
+// profile's relevant families only (software_engineering, data_ml,
+// devops_security), skipping other_tech/non_tech/it_support/product_design
+// as noise. This is internal/notification's keyword picker's option list,
+// and its single source of truth: the frontend never hardcodes it.
+func RelevantVocabulary() []string {
+	p := Default()
+	seen := make(map[string]bool)
+	var out []string
+	for _, r := range p.Rules {
+		if !p.relevant[r.Family] {
+			continue
+		}
+		for _, phrase := range r.Any {
+			if seen[phrase] {
+				continue
+			}
+			seen[phrase] = true
+			out = append(out, phrase)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/account"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/filtering/relevance"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
 )
 
@@ -33,6 +34,11 @@ type Accounts interface {
 	Saved(ctx context.Context, userID int64, limit, offset int) ([]account.Bookmark, int, error)
 	SavedIDs(ctx context.Context, userID int64) ([]int64, error)
 	HasSaved(ctx context.Context, userID, jobID int64) (bool, error)
+	NotificationKeywords(ctx context.Context, userID int64) ([]string, error)
+	SetNotificationKeywords(ctx context.Context, userID int64, keywords []string) error
+	RequestTelegramLink(ctx context.Context, userID int64) (account.TelegramLinkRequest, error)
+	TelegramLinked(ctx context.Context, userID int64) (bool, error)
+	UnlinkTelegram(ctx context.Context, userID int64) error
 }
 
 // SavedJobs reads jobs for an account's saved list, in any state.
@@ -115,6 +121,12 @@ func (a *accountRoutes) mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/me/bookmarks/ids", a.noStore(a.signedIn(a.bookmarkIDs)))
 	mux.HandleFunc("PUT /api/v1/me/bookmarks/{id}", a.noStore(a.signedIn(a.putBookmark)))
 	mux.HandleFunc("DELETE /api/v1/me/bookmarks/{id}", a.noStore(a.signedIn(a.deleteBookmark)))
+	mux.HandleFunc("GET /api/v1/notification-keywords", a.noStore(notificationVocabularyHandler))
+	mux.HandleFunc("GET /api/v1/me/notifications", a.noStore(a.signedIn(a.getNotifications)))
+	mux.HandleFunc("PUT /api/v1/me/notifications", a.noStore(a.signedIn(a.putNotifications)))
+	mux.HandleFunc("POST /api/v1/me/telegram/link", a.noStore(a.signedIn(a.requestTelegramLink)))
+	mux.HandleFunc("GET /api/v1/me/telegram/status", a.noStore(a.signedIn(a.telegramStatus)))
+	mux.HandleFunc("DELETE /api/v1/me/telegram/link", a.noStore(a.signedIn(a.deleteTelegramLink)))
 }
 
 // log is the request's logger (it carries the request id).
@@ -631,6 +643,106 @@ func (a *accountRoutes) deleteBookmark(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusInternalServerError, "internal_error", "internal error")
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// notificationVocabularyHandler returns the picker's option list: the same
+// phrase vocabulary internal/filtering/relevance's role classifier uses.
+// Public (no signedIn wrapper) but only mounted when accounts are on --
+// there is nothing to subscribe to without them. The frontend never
+// hardcodes this list.
+func notificationVocabularyHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"keywords": relevance.RelevantVocabulary()})
+}
+
+func (a *accountRoutes) getNotifications(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	keywords, err := a.accounts.NotificationKeywords(r.Context(), u.ID)
+	if err != nil {
+		if clientGone(r, err) {
+			return
+		}
+		a.log(r).Error("reading notification keywords failed", "error", err)
+		writeCode(w, http.StatusInternalServerError, "internal_error", "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keywords": keywords})
+}
+
+func (a *accountRoutes) putNotifications(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	var body struct {
+		Keywords []string `json:"keywords"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	switch err := a.accounts.SetNotificationKeywords(r.Context(), u.ID, body.Keywords); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, account.ErrUnknownKeyword):
+		writeCode(w, http.StatusBadRequest, "unknown_keyword", "one of those keywords is not in the notification-keywords list")
+	case errors.Is(err, account.ErrTooManyKeywords):
+		writeCode(w, http.StatusBadRequest, "too_many_keywords", "too many notification keywords")
+	default:
+		if clientGone(r, err) {
+			return
+		}
+		a.log(r).Error("setting notification keywords failed", "error", err)
+		writeCode(w, http.StatusInternalServerError, "internal_error", "internal error")
+	}
+}
+
+func (a *accountRoutes) requestTelegramLink(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	req, err := a.accounts.RequestTelegramLink(r.Context(), u.ID)
+	var limited *account.RateLimitedError
+	switch {
+	case err == nil:
+		a.event(r, "telegram_link_requested", "user_id", u.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deep_link":          req.DeepLink,
+			"expires_in_seconds": int(req.ExpiresIn.Seconds()),
+		})
+	case errors.Is(err, account.ErrNotificationsNotConfigured):
+		writeCode(w, http.StatusServiceUnavailable, "notifications_not_configured", "telegram notifications are not set up on this server")
+	case errors.As(err, &limited):
+		w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+		writeCode(w, http.StatusTooManyRequests, "rate_limited", "too many link requests, try again later")
+	default:
+		if clientGone(r, err) {
+			return
+		}
+		a.log(r).Error("requesting a telegram link failed", "error", err)
+		writeCode(w, http.StatusInternalServerError, "internal_error", "internal error")
+	}
+}
+
+func (a *accountRoutes) telegramStatus(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	linked, err := a.accounts.TelegramLinked(r.Context(), u.ID)
+	if err != nil {
+		if clientGone(r, err) {
+			return
+		}
+		a.log(r).Error("reading telegram link status failed", "error", err)
+		writeCode(w, http.StatusInternalServerError, "internal_error", "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"linked": linked})
+}
+
+func (a *accountRoutes) deleteTelegramLink(w http.ResponseWriter, r *http.Request) {
+	u, _ := userFrom(r.Context())
+	if err := a.accounts.UnlinkTelegram(r.Context(), u.ID); err != nil {
+		if clientGone(r, err) {
+			return
+		}
+		a.log(r).Error("unlinking telegram failed", "error", err)
+		writeCode(w, http.StatusInternalServerError, "internal_error", "internal error")
+		return
+	}
+	a.event(r, "telegram_unlinked", "user_id", u.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

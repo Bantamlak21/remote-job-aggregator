@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -511,4 +512,179 @@ func (s *Store) Purge(ctx context.Context, cutoff time.Time) (int64, error) {
 		}
 	}
 	return total, nil
+}
+
+// ErrTelegramChatAlreadyLinked is returned when a Telegram chat that is
+// already linked to a different account tries to confirm a link.
+var ErrTelegramChatAlreadyLinked = errors.New("account: this telegram chat is already linked to another account")
+
+// SetNotificationKeywords replaces an account's keyword subscriptions
+// wholesale (an empty slice clears them), in one transaction so a partial
+// write is never observed.
+func (s *Store) SetNotificationKeywords(ctx context.Context, userID int64, keywords []string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("account: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM notification_keywords WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("account: clearing notification keywords: %w", err)
+	}
+	now := s.now()
+	for _, kw := range keywords {
+		if _, err := tx.Exec(ctx, `INSERT INTO notification_keywords (user_id, keyword, created_at) VALUES ($1, $2, $3)
+			ON CONFLICT (user_id, keyword) DO NOTHING`, userID, kw, now); err != nil {
+			return fmt.Errorf("account: setting a notification keyword: %w", err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// NotificationKeywords returns an account's keyword subscriptions, sorted.
+func (s *Store) NotificationKeywords(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT keyword FROM notification_keywords WHERE user_id = $1 ORDER BY keyword`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("account: listing notification keywords: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var kw string
+		if err := rows.Scan(&kw); err != nil {
+			return nil, fmt.Errorf("account: scanning a notification keyword: %w", err)
+		}
+		out = append(out, kw)
+	}
+	return out, rows.Err()
+}
+
+// CreateTelegramLinkToken records a requested Telegram link, valid for ttl.
+// A person may hold more than one outstanding code at once (e.g. they
+// asked twice); each independently confirms the same account, the same
+// tolerance CreateLoginToken already has for sign-in links.
+func (s *Store) CreateTelegramLinkToken(ctx context.Context, userID int64, hash []byte, ttl time.Duration) error {
+	now := s.now()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO telegram_link_tokens (token_hash, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
+		hash, userID, now, now.Add(ttl)); err != nil {
+		return fmt.Errorf("account: storing a telegram link token: %w", err)
+	}
+	return nil
+}
+
+// ConfirmTelegramLink spends a single-use Telegram link code and links
+// chatID to whichever account requested it, in one transaction. Every
+// failure but a chat already linked elsewhere is ErrInvalidToken, the same
+// "don't distinguish the reasons" treatment Verify gives sign-in links.
+func (s *Store) ConfirmTelegramLink(ctx context.Context, hash []byte, chatID int64) (int64, error) {
+	now := s.now()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("account: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var userID int64
+	err = tx.QueryRow(ctx, `UPDATE telegram_link_tokens SET used_at = $2 WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $2 RETURNING user_id`,
+		hash, now).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrInvalidToken
+	}
+	if err != nil {
+		return 0, fmt.Errorf("account: spending a telegram link token: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `INSERT INTO telegram_links (user_id, chat_id, linked_at) VALUES ($1, $2, $3)
+		ON CONFLICT (user_id) DO UPDATE SET chat_id = EXCLUDED.chat_id, linked_at = EXCLUDED.linked_at`,
+		userID, chatID, now); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation on chat_id
+			return 0, ErrTelegramChatAlreadyLinked
+		}
+		return 0, fmt.Errorf("account: linking a telegram chat: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("account: commit: %w", err)
+	}
+	return userID, nil
+}
+
+// TelegramChatID returns an account's linked chat id, if any.
+func (s *Store) TelegramChatID(ctx context.Context, userID int64) (int64, bool, error) {
+	var chatID int64
+	err := s.pool.QueryRow(ctx, `SELECT chat_id FROM telegram_links WHERE user_id = $1`, userID).Scan(&chatID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("account: reading a telegram link: %w", err)
+	}
+	return chatID, true, nil
+}
+
+// UnlinkTelegram removes an account's Telegram link (idempotent).
+func (s *Store) UnlinkTelegram(ctx context.Context, userID int64) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM telegram_links WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("account: unlinking telegram: %w", err)
+	}
+	return nil
+}
+
+// notifiedJobIDs returns which of jobIDs this account has already been
+// notified about, so NotifyNewJobs can skip them.
+func (s *Store) notifiedJobIDs(ctx context.Context, userID int64, jobIDs []int64) (map[int64]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT job_id FROM notified_jobs WHERE user_id = $1 AND job_id = ANY($2)`, userID, jobIDs)
+	if err != nil {
+		return nil, fmt.Errorf("account: reading notified jobs: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("account: scanning a notified job id: %w", err)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// recordNotified marks a job as delivered to an account, idempotent
+// (ON CONFLICT DO NOTHING: a delivery already recorded is left alone).
+func (s *Store) recordNotified(ctx context.Context, userID, jobID int64) error {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO notified_jobs (user_id, job_id, notified_at) VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, job_id) DO NOTHING`, userID, jobID, s.now()); err != nil {
+		return fmt.Errorf("account: recording a notified job: %w", err)
+	}
+	return nil
+}
+
+// subscriber is an account with at least one notification keyword and a
+// confirmed Telegram chat -- NotifyNewJobs' candidate list to check new
+// jobs against.
+type subscriber struct {
+	userID   int64
+	chatID   int64
+	keywords []string
+}
+
+// subscribers returns every account eligible to be notified: it has a
+// linked Telegram chat and at least one keyword.
+func (s *Store) subscribers(ctx context.Context) ([]subscriber, error) {
+	rows, err := s.pool.Query(ctx, `SELECT tl.user_id, tl.chat_id, array_agg(nk.keyword)
+		FROM telegram_links tl
+		JOIN notification_keywords nk ON nk.user_id = tl.user_id
+		GROUP BY tl.user_id, tl.chat_id`)
+	if err != nil {
+		return nil, fmt.Errorf("account: listing notification subscribers: %w", err)
+	}
+	defer rows.Close()
+	var out []subscriber
+	for rows.Next() {
+		var sub subscriber
+		if err := rows.Scan(&sub.userID, &sub.chatID, &sub.keywords); err != nil {
+			return nil, fmt.Errorf("account: scanning a notification subscriber: %w", err)
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
 }

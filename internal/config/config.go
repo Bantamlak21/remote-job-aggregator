@@ -233,17 +233,53 @@ func (s SearchConfig) Configured() bool {
 // process. Construct it once via Load and pass it down explicitly; nothing
 // in this codebase should read os.Getenv outside this package.
 type Config struct {
-	AppEnv    Environment
-	Database  DatabaseConfig
-	Log       LogConfig
-	Shutdown  ShutdownConfig
-	HTTP      HTTPConfig
-	Discovery DiscoveryConfig
-	Ingestion IngestionConfig
-	Search    SearchConfig
-	API       APIConfig
-	Filtering FilteringConfig
-	Auth      AuthConfig
+	AppEnv       Environment
+	Database     DatabaseConfig
+	Log          LogConfig
+	Shutdown     ShutdownConfig
+	HTTP         HTTPConfig
+	Discovery    DiscoveryConfig
+	Ingestion    IngestionConfig
+	Search       SearchConfig
+	API          APIConfig
+	Filtering    FilteringConfig
+	Auth         AuthConfig
+	Scheduler    SchedulerConfig
+	Notification NotificationConfig
+}
+
+// SchedulerConfig configures Phase 6's in-process periodic ingestion (the
+// `serve` command's own ticker; see internal/scheduler). Only meaningful
+// with JOB_REPOSITORY=postgres -- serve wires it up only then.
+type SchedulerConfig struct {
+	Enabled  bool
+	Interval time.Duration
+}
+
+// NotificationConfig configures Telegram delivery for keyword-match job
+// notifications (internal/notification). Optional, like SearchConfig: most
+// commands never need it, and an absent bot token leaves the feature fully
+// inert (serve logs notifications instead of sending them, and Telegram
+// linking is refused) rather than failing startup.
+type NotificationConfig struct {
+	TelegramBotToken    string
+	TelegramBotUsername string
+}
+
+// LogValue redacts the bot token, the same reasoning as SearchConfig's
+// LogValue for its API key: a NotificationConfig must be logged safely
+// without care at every call site.
+func (n NotificationConfig) LogValue() slog.Value {
+	token := n.TelegramBotToken
+	if token != "" {
+		token = "REDACTED"
+	}
+	return slog.GroupValue(slog.String("telegram_bot_token", token), slog.String("telegram_bot_username", n.TelegramBotUsername))
+}
+
+// Configured reports whether Telegram delivery can actually run.
+func (n NotificationConfig) Configured() bool {
+	return n.TelegramBotToken != ""
 }
 
 // AuthConfig configures sign-in and saved jobs. They are on exactly when
@@ -474,6 +510,23 @@ func Load() (*Config, error) {
 		errs = append(errs, fmt.Errorf("JOB_MAX_AGE_DAYS must be between 0 (no limit) and 3650, got %d", jobMaxAgeDays))
 	}
 
+	schedulerEnabled, err := strconv.ParseBool(getEnv("SCHEDULER_ENABLED", "true"))
+	if err != nil {
+		errs = append(errs, errors.New("SCHEDULER_ENABLED must be true or false"))
+	}
+	schedulerInterval, err := getEnvDuration("SCHEDULER_INTERVAL", time.Hour)
+	if err != nil {
+		errs = append(errs, err)
+	} else if schedulerInterval <= 0 {
+		errs = append(errs, fmt.Errorf("SCHEDULER_INTERVAL must be positive, got %s", schedulerInterval))
+	}
+
+	telegramBotToken := getEnv("TELEGRAM_BOT_TOKEN", "")
+	telegramBotUsername := strings.TrimSpace(getEnv("TELEGRAM_BOT_USERNAME", ""))
+	if telegramBotToken != "" && telegramBotUsername == "" {
+		errs = append(errs, errors.New("TELEGRAM_BOT_TOKEN needs TELEGRAM_BOT_USERNAME (it builds the t.me deep link sent to a person linking their chat)"))
+	}
+
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
@@ -525,6 +578,14 @@ func Load() (*Config, error) {
 			JobMaxAge:         time.Duration(jobMaxAgeDays) * 24 * time.Hour,
 		},
 		Auth: auth,
+		Scheduler: SchedulerConfig{
+			Enabled:  schedulerEnabled,
+			Interval: schedulerInterval,
+		},
+		Notification: NotificationConfig{
+			TelegramBotToken:    telegramBotToken,
+			TelegramBotUsername: telegramBotUsername,
+		},
 	}, nil
 }
 

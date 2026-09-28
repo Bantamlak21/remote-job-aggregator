@@ -26,8 +26,10 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ingestion"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/mailer"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/notification"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/observability"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/runlog"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/scheduler"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
 	"github.com/Bantamlak12/remote-job-aggregator/migrations"
 )
@@ -467,6 +469,12 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args
 	if db != nil {
 		apiCfg.Ready = db.Pool.Ping
 	}
+
+	// acctSvc stays nil when sign-in is off: the scheduler's notification
+	// step (below) and the telegram listener both need an account.Service to
+	// notify through / confirm links against, and both simply do nothing
+	// without one -- there is no one to notify if there are no accounts.
+	var acctSvc *account.Service
 	if cfg.Auth.Enabled {
 		store, ok := repo.(*job.Store)
 		if !ok || db == nil {
@@ -477,17 +485,49 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args
 		acfg := account.Defaults()
 		acfg.PublicBaseURL = cfg.Auth.PublicBaseURL
 		acfg.LoginGlobalHour = cfg.Auth.MaxLinksPerHour
-		svc := account.NewService(account.NewStore(db.Pool), newMailer(cfg.Auth, logger), acfg, logger).WithJobs(store)
-		apiCfg.Accounts = svc
+		acfg.TelegramBotUsername = cfg.Notification.TelegramBotUsername
+		acctSvc = account.NewService(account.NewStore(db.Pool), newMailer(cfg.Auth, logger), acfg, logger).WithJobs(store)
+		apiCfg.Accounts = acctSvc
 		apiCfg.Saved = store
 		apiCfg.Cookie = api.CookieConfig{Secure: cfg.Auth.CookieSecure, SameSite: sameSiteOf(cfg.Auth.CookieSameSite)}
-		apiCfg.SessionTTL = svc.Config().SessionTTL
+		apiCfg.SessionTTL = acctSvc.Config().SessionTTL
 		apiCfg.ClientIPHeader = cfg.Auth.ClientIPHeader
 		runCtx, stopRun := context.WithCancel(ctx)
 		done := make(chan struct{})
-		go func() { defer close(done); svc.Run(runCtx) }()
+		go func() { defer close(done); acctSvc.Run(runCtx) }()
 		defer func() { stopRun(); <-done }()
 		logger.Info("sign-in and saved jobs are on", "public_base_url", cfg.Auth.PublicBaseURL, "mailer", cfg.Auth.Mailer)
+	}
+
+	// The scheduler needs a real, persistent job.Store: it ingests and
+	// classifies, which the mock repository cannot do.
+	if jobStore, ok := repo.(*job.Store); ok && db != nil && cfg.Scheduler.Enabled {
+		notifier := newNotifier(cfg.Notification, newHTTPClient(cfg), logger)
+		sched := &scheduler.Scheduler{
+			Interval: cfg.Scheduler.Interval,
+			Logger:   logger,
+			Tick: func(tickCtx context.Context) error {
+				return runSchedulerTick(tickCtx, cfg, logger, db, jobStore, acctSvc, notifier)
+			},
+		}
+		schedCtx, stopSched := context.WithCancel(ctx)
+		schedDone := make(chan struct{})
+		go func() { defer close(schedDone); sched.Run(schedCtx) }()
+		defer func() { stopSched(); <-schedDone }()
+		logger.Info("the scheduler is on", "interval", cfg.Scheduler.Interval)
+
+		// The listener needs somewhere to confirm a link against, so it only
+		// runs when sign-in (and therefore acctSvc) is also on.
+		if acctSvc != nil && cfg.Notification.Configured() {
+			listener := notification.NewListener(
+				notification.Telegram{BotToken: cfg.Notification.TelegramBotToken, HTTPClient: newHTTPClient(cfg)},
+				acctSvc, logger)
+			listenCtx, stopListen := context.WithCancel(ctx)
+			listenDone := make(chan struct{})
+			go func() { defer close(listenDone); listener.Run(listenCtx) }()
+			defer func() { stopListen(); <-listenDone }()
+			logger.Info("telegram linking is on", "bot_username", cfg.Notification.TelegramBotUsername)
+		}
 	}
 
 	server := api.NewServer(repo, apiCfg, logger)

@@ -16,9 +16,9 @@ func TestMigration000003_ClosesOnlyLegacySearchEthiojobsRows(t *testing.T) {
 	ctx := context.Background()
 	resetSchema(t, url)
 
-	// Back to the schema as of 000002 (undo 000007, 000006, 000005, 000004 and 000003), then insert
-	// rows the way the old code did.
-	for range 5 {
+	// Back to the schema as of 000002 (undo 000008, 000007, 000006, 000005, 000004 and 000003), then
+	// insert rows the way the old code did.
+	for range 6 {
 		if err := database.MigrateDownStep(ctx, url, migrations.FS); err != nil {
 			t.Fatalf("MigrateDownStep() failed: %v", err)
 		}

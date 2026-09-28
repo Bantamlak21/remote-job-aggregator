@@ -14,7 +14,8 @@ ones that check out. There is no ATS integration, ingestion, filtering,
 scheduling, or notification code yet — those land in later phases.
 (This paragraph is a Phase 2 snapshot kept as-is; see PROJECT_STATUS.md
 for what has actually shipped since — ATS ingestion, geographic
-eligibility/relevance filtering, ranking, and passwordless accounts are
+eligibility/relevance filtering, ranking, passwordless accounts, and an
+in-process scheduler with keyword-based Telegram job notifications are
 all done.)
 
 ## Requirements
@@ -77,7 +78,10 @@ aggregator seed-priority [file]       # register the Ethiopian priority companie
                                        # sources (default configs/ethiopian_companies.json)
 aggregator priority-report            # per-company open jobs by source, and how many of the
                                        # priority companies have at least one open job
-aggregator serve                      # start the public, read-only job API (see docs/api.md)
+aggregator serve                      # start the public, read-only job API (see docs/api.md).
+                                       # With JOB_REPOSITORY=postgres, also runs the scheduler:
+                                       # ingest -> classify -> notify on its own every
+                                       # SCHEDULER_INTERVAL (default 1h), no external cron needed
 ```
 
 `migrate-down` always requires `--yes`: rolling back even one migration is
@@ -152,6 +156,9 @@ raw credential even when the value itself was the problem.
 | `COOKIE_SAMESITE` | no | `lax` | `lax` or `strict` only (`None` is not offered: same-site deployment only, see docs/accounts.md) |
 | `CLIENT_IP_HEADER` | no | — | one of `X-Real-IP`, `X-Forwarded-For` (rightmost value used), `CF-Connecting-IP`, `True-Client-IP`, `Fly-Client-IP`; must be set by the one trusted reverse proxy in front of the API |
 | `AUTH_MAX_LINKS_PER_HOUR` | no | `300` | site-wide sign-in link cap, enforced in memory and in the database; crossing it logs `mail_breaker_open` |
+| `SCHEDULER_ENABLED` | no | `true` | only takes effect with `JOB_REPOSITORY=postgres`; runs ingest → classify → notify on its own inside `serve` |
+| `SCHEDULER_INTERVAL` | no | `1h` | how often the scheduler ticks; must be positive |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` | no | — | both or neither; from [@BotFather](https://t.me/BotFather). Without them, keyword notifications and Telegram linking exist but are fully inert (see docs/accounts.md) |
 | `TEST_DATABASE_URL` | no | — | integration tests only; database name must end in `_test` |
 
 Config values passed via `DATABASE_URL`'s own query string (e.g.

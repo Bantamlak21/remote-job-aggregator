@@ -907,6 +907,42 @@ it is purely an `ORDER BY` variant over data that already exists. See
   API-level test for `?sort=` validation and end-to-end ordering. Two mutation checks (the SQL's
   `DESC`→`ASC`, and disconnecting `Filter.Sort` from the query) each broke a test, confirmed, reverted.
 
+### Phase 6: Scheduling & Telegram notifications (branch `Bantamlak21/phase6-scheduler-notifications-e451cddd`)
+
+`PROJECT_STATUS.md`'s Phase 6 was "periodic, unattended execution; notify on relevant new jobs."
+Scoped up from that during planning (Confusion Protocol: the request contradicted the existing
+data model) — Bantamlak wants per-account **keyword** subscriptions ("select backend, or
+golang"), not tier-based notification. Jobs have no tags column and role classification is only
+7 broad families, so notifications reuse `internal/filtering/relevance`'s own phrase vocabulary
+(exported as `RelevantVocabulary()`/`Words()`/`ContainsPhrase()`) as the match basis instead of
+adding a schema/ingestion change.
+
+- `internal/scheduler`: `Scheduler.Run` — one tick immediately, then one every
+  `SCHEDULER_INTERVAL` (default 1h), until its context is done. Wired into `aggregator serve`
+  (not a separate command): a deploy that just runs `serve` gets periodic ingest → classify →
+  notify with no external cron.
+- `internal/notification`: `Notifier` interface, `Telegram` (Bot API `sendMessage`/`getUpdates`
+  long-poll, no webhook), `Log` (dev default, mirrors `mailer.Log`).
+- `internal/account`: `NotifyNewJobs` (the match+send+idempotency-record loop),
+  `SetNotificationKeywords`/`NotificationKeywords`, `RequestTelegramLink`/`ConfirmTelegramLink`/
+  `TelegramLinked`/`UnlinkTelegram` — mirrors the bookmarks methods' shape closely.
+- `internal/api`: `GET /notification-keywords`, `GET`/`PUT /me/notifications`,
+  `POST`/`GET`/`DELETE /me/telegram/link(-status)`. See docs/api.md.
+- Migration `000008_notifications`. See Section 5.
+- Tests: package-level for every touched package, including a fake `httptest.Server` standing
+  in for `api.telegram.org` (never the real API), a fake ticker for the scheduler (no real-clock
+  waits), and a whole-word-match regression (`"java"` must not match `"javascript"`). Full
+  `go test ./...` run clean before commit.
+- Fixed in passing: `internal/database/database_test.go`'s `latestMigrationVersion` constant
+  (hardcoded `7`, its own comment says "bump it with every new migration") and two other tests'
+  hardcoded `MigrateDownStep` counts were still assuming 7 migrations; left unbumped, they
+  silently corrupt `TEST_DATABASE_URL` for every other package's tests that happen to run in the
+  same `go test ./...` invocation (reproduced live: `internal/database`'s tests, run right
+  before `internal/job`'s, left `schema_migrations` dirty and failed 30+ unrelated tests in
+  `internal/job`/`internal/priority`/`internal/runlog`). Bumped to 8 and fixed the two other
+  hardcoded step counts; not a Phase 6 scope item, but the next migration will hit the exact
+  same trap if this constant is forgotten again.
+
 ## 3. Work In Progress
 
 **Accounts and saved jobs** (Section 2) is code-complete, reviewed three times (backend
@@ -956,16 +992,10 @@ list. Phase 3 (ATS integration & ingestion, Greenhouse first) is also complete �
 Section 2 — and removed from this list. Phase 4 (geographic eligibility and relevance) is also
 built — see Section 2 — and removed from this list. Phase 5 (ranking) is also built — see
 Section 2 — and removed from this list; it turned out smaller than sketched below once Phases
-3/4's stored data made an ingestion-time scoring step and a ranking table unnecessary.
-
-### Phase 6 — Scheduling & notifications
-- **Objective:** periodic, unattended execution; notify on relevant new jobs.
-- **Tasks:** `scheduler` package (periodic discovery/ingestion/cleanup, no distributed
-  scheduling infra); `notification` package with a `Notifier` interface, Telegram first.
-- **Expected files/modules:** `internal/scheduler/`, `internal/notification/telegram/`.
-- **Dependencies:** Phase 5 (ranked jobs to notify about).
-- **Verification:** scheduler tests with a fake clock/ticker; notifier tests against a fake
-  Telegram endpoint.
+3/4's stored data made an ingestion-time scoring step and a ranking table unnecessary. Phase 6
+(scheduling & Telegram notifications) is also built — see Section 2 — and removed from this
+list; its notification half is keyword-based rather than tier-based, an owner decision made
+during planning (see Section 2's Phase 6 entry for why).
 
 ### Phase 7 — Additional providers & observability
 - **Objective:** Lever and Ashby support; metrics beyond structured logging.
@@ -1023,8 +1053,14 @@ query pattern), `jobs(last_seen_at)`.
 firing only when a column other than `updated_at` itself actually changed.
 
 **Missing schema components (intentional, not oversights):**
-- No indexes/tables for ranking, scheduling state, or notification dedup — belong to
-  Phases 5–6.
+- No ranking table: Phase 5 turned out to need none (an `ORDER BY` variant over existing
+  columns). No scheduling-state table either: the scheduler (Phase 6) needs none — it computes
+  its "since" window from `SCHEDULER_INTERVAL` at tick time rather than persisting a checkpoint.
+
+**Notification tables (migration `000008`, Phase 6):** `notification_keywords` (an account's
+keyword subscriptions), `telegram_link_tokens`/`telegram_links` (linking a Telegram chat to an
+account, shaped like `login_tokens`/`sessions`), `notified_jobs` (per-account delivery
+idempotency, `PRIMARY KEY (user_id, job_id)`). See docs/accounts.md#notifications-telegram-phase-6.
 
 **`job_eligibility` (migration `000006`, Phase 4):** one row per job with the eligibility status,
 confidence, basis, reasons, evidence, detected locations, restrictions, hours constraint, role
@@ -1259,22 +1295,24 @@ because none of that code exists yet.
 
 ## 9. Exact Next Step
 
-Run `aggregator migrate-up` (000004 through 000007 — 000007 adds accounts/bookmarks),
-`aggregator discover-boards`, `aggregator ingest` (which now also classifies what it stored) and
-`aggregator classify` once for the jobs already stored, then restart `aggregator serve` and
-rebuild the frontend. Schedule `ingest` daily and the search source weekly
-(docs/priority-companies.md) — see the note below, nothing runs this automatically yet.
+Run `aggregator migrate-up` (000004 through 000008 — 000007 adds accounts/bookmarks, 000008 adds
+notification keywords/Telegram linking), `aggregator discover-boards`, `aggregator ingest`
+(which now also classifies what it stored) and `aggregator classify` once for the jobs already
+stored, then restart `aggregator serve` and rebuild the frontend. With `SCHEDULER_ENABLED=true`
+(the default) `serve` now runs `ingest`→`classify`→notify on its own every `SCHEDULER_INTERVAL`
+(default 1h); the manual `ingest`/`classify`/cron path above still works and is what Phase 6's
+own tests exercise directly, but is no longer the only way to keep data fresh.
 
 **Phase 5 (ranking) is done** — see Section 2. `?sort=ranked` is live; the list's default stays
 newest-first.
 
-**Start Phase 6: scheduling & notifications.** Nothing in this codebase runs `ingest`/`classify`
-periodically on its own — `aggregator serve` never calls them, and there is no `internal/scheduler`
-yet. Today that's an operator's own cron/systemd timer/k8s CronJob calling the CLI (asked and
-answered 2026-09-28); building an in-process scheduler (no distributed scheduling infra, per
-CLAUDE.md) so a deploy needs no external cron is Phase 6's `scheduler` package, and it's the thing
-to build if Bantamlak wants ingestion to "just happen" on a server rather than needing a cron
-entry. The `notification` package (Telegram first) depends on this too.
+**Phase 6 (scheduling & Telegram notifications) is done** — see Section 2. The frontend has no
+UI yet for picking notification keywords or linking Telegram (`GET /notification-keywords`,
+`PUT /me/notifications`, `POST /me/telegram/link` are all live and tested, just not wired into
+`remote-job-aggregator-web` — see Section 2's "remote-job-aggregator-web" subsection: the
+frontend gets updated per backend phase, and this one still needs its turn).
+
+**Start Phase 7: Lever/Ashby support + observability.** This is now the real next phase.
 
 Smaller, independent items:
 - **Phase 7 (Lever/Ashby) is now blocking real coverage**: `search-discover` found 6 boards,

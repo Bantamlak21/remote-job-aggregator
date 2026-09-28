@@ -242,8 +242,9 @@ Every error body is `{"error": "<text for a person>"}`, and on `/auth` and `/me`
 `Retry-After`), `invalid_link` (400: unknown, used or expired — deliberately not told apart),
 `unauthorized` (401), `bookmark_limit` (409), `job_unavailable` (404), `cross_origin` (403),
 `body_too_large` (413), `bad_request` (400), `unsupported_media_type` (415),
-`confirmation_required` (400), `internal_error` (500, or 503 when the database is briefly
-unreachable — never treated as signed out).
+`confirmation_required` (400), `unknown_keyword` (400), `too_many_keywords` (400),
+`notifications_not_configured` (503, no `TELEGRAM_BOT_TOKEN`), `internal_error` (500, or 503
+when the database is briefly unreachable — never treated as signed out).
 
 A request body over 1&nbsp;KiB on `/auth/*`, or a `GET`-only route's body of any size,
 answers `413`.
@@ -261,6 +262,12 @@ answers `413`.
 | `GET /api/v1/me/bookmarks/ids` | none | `200 {"ids":["12","34"]}` | `unauthorized` 401 |
 | `PUT /api/v1/me/bookmarks/{id}` | none | `204`, idempotent | `unauthorized` 401, `job_unavailable` 404 (not found, or not currently visible: closed, expired or aged out), `bookmark_limit` 409 (over 500 saved) |
 | `DELETE /api/v1/me/bookmarks/{id}` | none | `204`, idempotent | `unauthorized` 401 |
+| `GET /api/v1/notification-keywords` | none | `200 {"keywords":["backend","golang",...]}` — the picker's option list; no sign-in needed | none |
+| `GET /api/v1/me/notifications` | none | `200 {"keywords":[...]}`, the account's current subscription | `unauthorized` 401 |
+| `PUT /api/v1/me/notifications` | `{"keywords":[...]}` | `204`, replaces the subscription wholesale (`[]` clears it) | `unauthorized` 401, `unknown_keyword` 400 (not in the list above), `too_many_keywords` 400 (over 20) |
+| `POST /api/v1/me/telegram/link` | none | `200 {"deep_link":"https://t.me/<bot>?start=...","expires_in_seconds":900}` | `unauthorized` 401, `notifications_not_configured` 503, `rate_limited` 429 (`Retry-After`) |
+| `GET /api/v1/me/telegram/status` | none | `200 {"linked": true\|false}` | `unauthorized` 401 |
+| `DELETE /api/v1/me/telegram/link` | none | `204`, idempotent | `unauthorized` 401 |
 
 The emailed link is `<PUBLIC_BASE_URL>/auth/verify#token=...`. The token is in the URL
 fragment so it never reaches a server log or a Referer header; the page reads it, asks
@@ -274,6 +281,13 @@ The session cookie is reissued (a fresh `Set-Cookie`, sliding its expiry) on `PO
 /auth/verify` and, from time to time, on any authenticated request once more than half its
 idle window has passed — a client that stores cookies normally needs no special handling for
 this.
+
+The deep link from `POST /me/telegram/link` opens Telegram; the bot's own reply to `/start
+<code>` is what actually confirms the link (see [accounts.md](accounts.md#notifications-telegram-phase-6)) —
+there is no endpoint that confirms it directly, since the confirmation comes from Telegram, not
+the browser. Keywords in `PUT /me/notifications` must each be one of `GET
+/notification-keywords`' list; matching a job is whole-word and case-insensitive against its
+title, any one keyword notifying (not all of them at once).
 
 A saved job in `GET /me/bookmarks` is a normal job summary plus `closed` (the job is no
 longer open on its board, or has passed its deadline, or has aged past `JOB_MAX_AGE_DAYS` —

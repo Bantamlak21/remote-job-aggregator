@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Bantamlak12/remote-job-aggregator/internal/filtering/relevance"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/mailer"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/notification"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ratelimit"
 )
 
@@ -38,6 +41,18 @@ type Config struct {
 	MaxSessions int
 	// SiteName is what the email calls the site.
 	SiteName string
+	// TelegramLinkTokenTTL is how long a requested link code works.
+	TelegramLinkTokenTTL time.Duration
+	// TelegramLinkPerHour caps how many link codes one account may request
+	// per hour (the same "circuit breaker" reasoning as the sign-in link
+	// limits: a code costs nothing to generate but is worth bounding anyway).
+	TelegramLinkPerHour int
+	// TelegramBotUsername builds the t.me deep link a requested code is
+	// shown with (https://t.me/<username>?start=<code>). Notifications stay
+	// entirely unavailable (RequestTelegramLink refuses) until this is set.
+	TelegramBotUsername string
+	// MaxNotificationKeywords is the most keywords one account may subscribe to.
+	MaxNotificationKeywords int
 }
 
 // Defaults returns the policy a production site should start from.
@@ -48,7 +63,10 @@ func Defaults() Config {
 		MaxBookmarks:       500,
 		LoginPerEmail15Min: 3, LoginPerEmailDay: 10, LoginPerIP15Min: 10, LoginPerIPDay: 50, LoginGlobalHour: 300, VerifyPerIP15Min: 30,
 		MailWorkers: 2, MailQueue: 64, MaxSessions: 10,
-		SiteName: "Remote jobs",
+		SiteName:                "Remote jobs",
+		TelegramLinkTokenTTL:    15 * time.Minute,
+		TelegramLinkPerHour:     5,
+		MaxNotificationKeywords: 20,
 	}
 }
 
@@ -89,6 +107,11 @@ func (c Config) withDefaults() Config {
 	if c.SiteName == "" {
 		c.SiteName = d.SiteName
 	}
+	if c.TelegramLinkTokenTTL <= 0 {
+		c.TelegramLinkTokenTTL = d.TelegramLinkTokenTTL
+	}
+	set(&c.TelegramLinkPerHour, d.TelegramLinkPerHour)
+	set(&c.MaxNotificationKeywords, d.MaxNotificationKeywords)
 	c.PublicBaseURL = strings.TrimRight(c.PublicBaseURL, "/")
 	return c
 }
@@ -125,6 +148,8 @@ type Service struct {
 
 	emailShort, emailDay, ipShort, ipDay, global, verifyIP *ratelimit.Limiter
 	queue                                                  chan mailer.Message
+
+	telegramLink *ratelimit.Limiter
 }
 
 // NewService returns a Service. Call Run to start the mail workers.
@@ -140,6 +165,8 @@ func NewService(store *Store, m mailer.Mailer, cfg Config, logger *slog.Logger) 
 		global:     ratelimit.New(cfg.LoginGlobalHour, time.Hour, 1),
 		verifyIP:   ratelimit.New(cfg.VerifyPerIP15Min, 15*time.Minute, maxKeys),
 		queue:      make(chan mailer.Message, cfg.MailQueue),
+
+		telegramLink: ratelimit.New(cfg.TelegramLinkPerHour, time.Hour, maxKeys),
 	}
 }
 
@@ -391,4 +418,177 @@ func (s *Service) SavedIDs(ctx context.Context, userID int64) ([]int64, error) {
 // HasSaved reports whether the user saved the job.
 func (s *Service) HasSaved(ctx context.Context, userID, jobID int64) (bool, error) {
 	return s.store.HasBookmark(ctx, userID, jobID)
+}
+
+// ErrNotificationsNotConfigured is returned by RequestTelegramLink when the
+// server has no bot username configured (TELEGRAM_BOT_TOKEN unset):
+// notifications are then fully inert, the same "refuse outright" treatment
+// search-discover gives a missing SERPER_API_KEY rather than pretending to
+// work.
+var ErrNotificationsNotConfigured = errors.New("account: telegram notifications are not configured")
+
+// ErrUnknownKeyword is returned for a keyword outside relevance.RelevantVocabulary.
+var ErrUnknownKeyword = errors.New("account: not a recognized notification keyword")
+
+// ErrTooManyKeywords is returned when a keyword set would exceed the
+// per-account limit.
+var ErrTooManyKeywords = errors.New("account: too many notification keywords")
+
+// NotificationKeywords returns an account's keyword subscriptions.
+func (s *Service) NotificationKeywords(ctx context.Context, userID int64) ([]string, error) {
+	return s.store.NotificationKeywords(ctx, userID)
+}
+
+// SetNotificationKeywords replaces an account's keyword subscriptions.
+// Every keyword must be one relevance.RelevantVocabulary lists -- the same
+// vocabulary the picker's options come from, so nothing reaches the
+// database that could never match a title.
+func (s *Service) SetNotificationKeywords(ctx context.Context, userID int64, keywords []string) error {
+	if len(keywords) > s.cfg.MaxNotificationKeywords {
+		return ErrTooManyKeywords
+	}
+	valid := make(map[string]bool)
+	for _, v := range relevance.RelevantVocabulary() {
+		valid[v] = true
+	}
+	seen := make(map[string]bool, len(keywords))
+	deduped := make([]string, 0, len(keywords))
+	for _, kw := range keywords {
+		if !valid[kw] {
+			return ErrUnknownKeyword
+		}
+		if seen[kw] {
+			continue
+		}
+		seen[kw] = true
+		deduped = append(deduped, kw)
+	}
+	return s.store.SetNotificationKeywords(ctx, userID, deduped)
+}
+
+// TelegramLinkRequest is a freshly issued Telegram link: the deep link to
+// open and how long it stays valid.
+type TelegramLinkRequest struct {
+	DeepLink  string
+	ExpiresIn time.Duration
+}
+
+// RequestTelegramLink issues a single-use code for userID and returns the
+// t.me deep link that spends it once opened. Rate limited per account,
+// like requesting a sign-in link is limited per address.
+func (s *Service) RequestTelegramLink(ctx context.Context, userID int64) (TelegramLinkRequest, error) {
+	if s.cfg.TelegramBotUsername == "" {
+		return TelegramLinkRequest{}, ErrNotificationsNotConfigured
+	}
+	if ok, wait := s.telegramLink.Allow(strconv.FormatInt(userID, 10)); !ok {
+		return TelegramLinkRequest{}, &RateLimitedError{RetryAfter: wait}
+	}
+	token, hash, err := newToken()
+	if err != nil {
+		return TelegramLinkRequest{}, err
+	}
+	if err := s.store.CreateTelegramLinkToken(ctx, userID, hash, s.cfg.TelegramLinkTokenTTL); err != nil {
+		return TelegramLinkRequest{}, err
+	}
+	return TelegramLinkRequest{
+		DeepLink:  fmt.Sprintf("https://t.me/%s?start=%s", s.cfg.TelegramBotUsername, token),
+		ExpiresIn: s.cfg.TelegramLinkTokenTTL,
+	}, nil
+}
+
+// ConfirmTelegramLink implements notification.LinkConfirmer: it's called for
+// every "/start <code>" the Telegram listener sees. Every failure but a
+// chat already linked to a different account is logged and dropped, not
+// surfaced anywhere -- there is no requester waiting on this call the way
+// an HTTP handler's caller is; the person just sees the bot silently do
+// nothing and can request a fresh code.
+func (s *Service) ConfirmTelegramLink(ctx context.Context, code string, chatID int64) error {
+	if checkToken(code) != nil {
+		return ErrInvalidToken
+	}
+	_, err := s.store.ConfirmTelegramLink(ctx, hashToken(clampToken(code)), chatID)
+	return err
+}
+
+// TelegramLinked reports whether an account has a confirmed Telegram chat.
+func (s *Service) TelegramLinked(ctx context.Context, userID int64) (bool, error) {
+	_, linked, err := s.store.TelegramChatID(ctx, userID)
+	return linked, err
+}
+
+// UnlinkTelegram removes an account's Telegram link.
+func (s *Service) UnlinkTelegram(ctx context.Context, userID int64) error {
+	return s.store.UnlinkTelegram(ctx, userID)
+}
+
+// NotifyNewJobs is the scheduler's per-tick delivery step: for every account
+// with a confirmed Telegram chat and at least one keyword, it whole-word
+// matches each candidate's title against that account's keywords (any one
+// matching notifies -- OR, not AND) and sends the ones not already recorded
+// in notified_jobs. A send that fails leaves no record, so the next tick
+// retries it for free. O(subscribers x candidates): deliberately simple,
+// this project's scale needs nothing smarter (CLAUDE.md: vanilla by default).
+func (s *Service) NotifyNewJobs(ctx context.Context, candidates []notification.Candidate, notifier notification.Notifier) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	subs, err := s.store.subscribers(ctx)
+	if err != nil {
+		return err
+	}
+	if len(subs) == 0 {
+		return nil
+	}
+
+	tokenized := make([][]string, len(candidates))
+	for i, c := range candidates {
+		tokenized[i] = relevance.Words(c.Title)
+	}
+
+	var errs []error
+	for _, sub := range subs {
+		jobIDs := make([]int64, len(candidates))
+		for i, c := range candidates {
+			jobIDs[i] = c.JobID
+		}
+		already, err := s.store.notifiedJobIDs(ctx, sub.userID, jobIDs)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for i, c := range candidates {
+			if already[c.JobID] {
+				continue
+			}
+			if !matchesAny(tokenized[i], sub.keywords) {
+				continue
+			}
+			msg := notification.Message{ChatID: sub.chatID, Text: notifyText(c.Title)}
+			if err := notifier.Send(ctx, msg); err != nil {
+				s.logger.Error("sending a job notification failed", "error", err)
+				continue
+			}
+			if err := s.store.recordNotified(ctx, sub.userID, c.JobID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// matchesAny reports whether any keyword whole-word matches a title's words.
+func matchesAny(titleWords []string, keywords []string) bool {
+	for _, kw := range keywords {
+		if relevance.ContainsPhrase(titleWords, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func notifyText(title string) string {
+	return fmt.Sprintf("New job matching your interests: %s", title)
 }

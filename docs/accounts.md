@@ -4,8 +4,9 @@ Optional. Off unless `PUBLIC_BASE_URL` is set. With it off, the API is exactly t
 read-only job API and none of the `/auth` or `/me` routes exist.
 
 A visitor signs in with an email address, without a password: the site emails a single-use
-link. Signed-in people can save jobs (bookmarks) and see them on a Saved page. Endpoints are in
-[api.md](api.md#accounts-and-saved-jobs).
+link. Signed-in people can save jobs (bookmarks) and see them on a Saved page, and can subscribe
+to keyword job notifications delivered over Telegram (see "Notifications" below). Endpoints are
+in [api.md](api.md#accounts-and-saved-jobs).
 
 ## Design
 
@@ -161,6 +162,49 @@ Either way, the web app's own static host should add its own `Content-Security-P
 `X-Frame-Options` and `Referrer-Policy` (the API sends these on its own responses already; a
 static file server generally does not).
 
+## Notifications (Telegram, Phase 6)
+
+Optional, and layered on top of sign-in: off unless `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_BOT_USERNAME` are both set, and even then only a signed-in account can use it.
+
+A signed-in person picks keywords from a fixed list (`GET /api/v1/notification-keywords` — the
+same phrase vocabulary `internal/filtering/relevance`'s role classifier uses, e.g. "golang",
+"backend", "devops": there is no free-text tag on a job to match against instead, so the picker
+offers exactly the vocabulary that can match), then links a Telegram chat. The in-process
+scheduler (`aggregator serve`'s own ticker; no external cron) checks newly opened jobs against
+every subscribed account's keywords once per tick and sends a Telegram DM for each match.
+
+| Piece | Decision | Why |
+|---|---|---|
+| Match basis | The `relevance` package's own phrase list (~150 phrases across the relevant role families), not a jobs-table tag column | The `jobs` table has never had a tags column (see `docs/api.md`'s tag-filter note); this reuses data that already exists instead of adding an extraction step |
+| Match semantics | Whole-word, OR across an account's keywords (any one matching notifies) | "java" must not match "javascript"; someone interested in either "golang" or "devops" should hear about either, not only jobs that are both |
+| What's checked | Jobs with `status = 'open'` and `first_seen_at` within the scheduler's lookback window (2x `SCHEDULER_INTERVAL`, so a slow or missed tick never leaves a gap) | Eligibility/relevance tiering is not part of the filter: a keyword subscription is a pure interest filter, independent of the Ethiopia-eligibility the rest of the site is built around |
+| Delivery idempotency | `notified_jobs (user_id, job_id)`; a row is written only after `Send` succeeds | A job already notified is never sent twice; a failed send leaves no row, so the next tick retries it for free, with no separate retry logic |
+| Telegram linking | A signed-in person requests a code (`POST /me/telegram/link`, rate limited per account), gets a `https://t.me/<bot>?start=<code>` deep link, opens it in Telegram, and the bot's own `/start <code>` message confirms the link | Same single-use, hashed-at-rest, short-TTL shape as a sign-in link (`telegram_link_tokens` mirrors `login_tokens`) |
+| Listener | Long-polls the Bot API's `getUpdates` (no webhook) | No public endpoint or TLS certificate needed, and this project runs one instance (no distributed scheduling infra), so there is nothing a webhook would need to load-balance across |
+| One chat, one account | `telegram_links.chat_id` is `UNIQUE` | A Telegram chat cannot end up linked to two accounts |
+| Notifier | `internal/notification`: `Telegram` in production, `Log` (writes to the log, never sends) when `TELEGRAM_BOT_TOKEN` is unset | Mirrors `internal/mailer`'s `SMTP`/`Log` split for the same reason: the feature is fully inert, not half-working, without real credentials |
+
+### Configuration
+
+- `SCHEDULER_ENABLED` (default `true`) and `SCHEDULER_INTERVAL` (default `1h`) control the ticker
+  itself, independent of whether Telegram is configured — the scheduler also runs ingest and
+  classify, so turning it off stops those too. Needs `JOB_REPOSITORY=postgres`.
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME`: both or neither. Get them from
+  [@BotFather](https://t.me/BotFather) (`/newbot`). Without them, keyword selection and the link
+  endpoint still exist but `POST /me/telegram/link` answers `503 notifications_not_configured`.
+- Apply migration 000008 (`aggregator migrate-up`): adds `notification_keywords`,
+  `telegram_link_tokens`, `telegram_links`, `notified_jobs`. `migrate-down --yes` removes them.
+
+### Development
+
+```bash
+TELEGRAM_BOT_TOKEN= aggregator serve   # unset: notifications write to the log, no bot needed
+```
+
+With a real bot token, message the bot on Telegram to see `/start <code>` come through the
+listener; `SCHEDULER_INTERVAL=1m` shortens the wait to see a tick during manual testing.
+
 ## Email
 
 Send from the site's own domain (`no-reply@jobs.example.com`), through a transactional provider.
@@ -186,9 +230,10 @@ is more than 20% of `login_requested` events over a day. Revisit this decision i
 
 What the database holds: the email address and the time the account was created and last signed
 in; a digest of each unused sign-in link (with the address and times); a digest of each session
-(with times, no IP address and no user agent); and the ids of the saved jobs with the time each
-was saved. The API logs method, path, status, duration and a request id, never a body, cookie or
-token. Sign-in and account events (`login_requested`, `login_verified`, `login_failed`,
+(with times, no IP address and no user agent); the ids of the saved jobs with the time each
+was saved; and, for notifications, the chosen keywords and the linked Telegram chat id (a
+numeric id Telegram assigns the chat, not a phone number or username). The API logs method,
+path, status, duration and a request id, never a body, cookie or token. Sign-in and account events (`login_requested`, `login_verified`, `login_failed`,
 `login_rate_limited`, `mail_breaker_open`, `logout`, `logout_all`, `account_deleted`,
 `csrf_rejected`, `mail_queue_full`) are logged with the request id and, where an address is
 involved, only its masked form: first character, then the top-level domain only (`a***@***.org`,
@@ -204,7 +249,8 @@ Unused and used links are purged 24 hours after they expire; sessions 24 hours a
 > or request about your data.
 >
 > **What we keep.** If you sign in: your email address; the ids of the jobs you save and when you
-> saved them; a record of your sign-in sessions (when each began and was last used). Our server logs
+> saved them; a record of your sign-in sessions (when each began and was last used); and, if you
+> turn on Telegram notifications, the keywords you chose and your Telegram chat id. Our server logs
 > record the request and the time, kept for [up to 90 days]. If you do not sign in, we keep nothing
 > about you.
 >
@@ -242,7 +288,8 @@ request should come from the address itself, or answer something only the accoun
 know), run against the production database:
 
 ```sql
-DELETE FROM users WHERE email = 'person@example.com';           -- sessions and bookmarks cascade
+DELETE FROM users WHERE email = 'person@example.com';           -- sessions, bookmarks, notification
+                                                                  -- keywords and telegram link cascade
 DELETE FROM login_tokens WHERE email = 'person@example.com';
 ```
 
@@ -283,6 +330,8 @@ the site is opened to the public:
 - [ ] `PUBLIC_BASE_URL`, `SMTP_*` (including `SMTP_USERNAME`/`SMTP_PASSWORD`), `APP_ENV=production`
       set; `aggregator serve` starts (it refuses an unsafe mix).
 - [ ] Migration 000007 applied.
+- [ ] If Telegram notifications are wanted: migration 000008 applied, `TELEGRAM_BOT_TOKEN` and
+      `TELEGRAM_BOT_USERNAME` set, and a real link + `/start` round-tripped end to end once.
 - [ ] HTTPS, redirect and HSTS; the reverse proxy is the one and only layer setting the client-IP
       header, and `CLIENT_IP_HEADER` matches what it sets (see the nginx/Caddy examples above).
 - [ ] SPF, DKIM, DMARC set; inbox test to Gmail, Outlook, Yahoo recorded; mail-tester.com score
@@ -313,7 +362,8 @@ the site is opened to the public:
 - Google or other social sign-in. Passwordless email covers sign-in without an external account or
   credentials to manage.
 - Per-job link previews (Open Graph) need server-side rendering or a prerender step in front of the SPA.
-- Email or Telegram job alerts, and a way to report a wrong eligibility verdict.
+- Email job alerts (Telegram is built; see "Notifications" above), and a way to report a wrong
+  eligibility verdict.
 - Metrics endpoints and alerting: the API has structured logs only.
 - A `Content-Security-Policy` and other security headers on the web app's static host (set them at the
   host or proxy).
