@@ -11,8 +11,11 @@ foundation) is done. Phase 2 adds a repository for companies and their
 ATS boards, a shared pooled/retrying HTTP client, and a seed-file-driven
 discovery mechanism that validates candidate boards and persists the
 ones that check out. There is no ATS integration, ingestion, filtering,
-ranking, scheduling, or notification code yet — those land in later
-phases.
+scheduling, or notification code yet — those land in later phases.
+(This paragraph is a Phase 2 snapshot kept as-is; see PROJECT_STATUS.md
+for what has actually shipped since — ATS ingestion, geographic
+eligibility/relevance filtering, ranking, and passwordless accounts are
+all done.)
 
 ## Requirements
 
@@ -325,7 +328,8 @@ for configuration, deployment and the launch checklist.
 
 Jobs from 25 curated Ethiopian tech companies are badged "Ethiopian company" (`is_priority`
 in the API; `?priority=true` narrows a list to them). They sort like every other job, newest
-first.
+first, by default; `?sort=ranked` (see [docs/api.md](docs/api.md#ranked-sort)) puts a priority
+company ahead of a non-priority one as one of its tiebreaks.
 The list lives in `configs/ethiopian_companies.json`; how their jobs are found, what each
 source checks before it trusts a result, and the measured coverage are in
 [docs/priority-companies.md](docs/priority-companies.md).

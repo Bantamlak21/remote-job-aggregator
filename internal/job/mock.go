@@ -7,7 +7,22 @@ import (
 	"time"
 
 	"github.com/Bantamlak12/remote-job-aggregator/internal/market"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ranking"
 )
+
+// eligibilityTierOf and roleRelevant read a fixture job's Eligibility/Role the
+// same way the ranked SQL reads job_eligibility: nil (unclassified) is the
+// "unknown" tier and not relevant, exactly matching a LEFT JOIN's NULLs.
+func eligibilityTierOf(j Job) ranking.Tier {
+	if j.Eligibility == nil {
+		return ranking.EligibilityTier("")
+	}
+	return ranking.EligibilityTier(j.Eligibility.Status)
+}
+
+func roleRelevant(j Job) bool {
+	return j.Role != nil && j.Role.Relevant
+}
 
 // MockRepository serves a fixed set of illustrative fixture jobs — not
 // scraped, not persisted, not claimed to be real postings. Each
@@ -71,13 +86,28 @@ func (m *MockRepository) List(ctx context.Context, filter Filter) (ListResult, e
 		matched = append(matched, j)
 	}
 
-	// Same order Store.List uses: newest-first, then id. Priority jobs get
-	// no special position.
+	// Same order Store.List uses: newest-first by default (priority jobs get
+	// no special position), or, under sort=ranked, the internal/ranking tiers
+	// — eligibility, then role relevance, then priority company, then
+	// recency — so JOB_REPOSITORY=mock exercises the same ordering a caller
+	// would see against real Postgres.
 	sort.SliceStable(matched, func(i, k int) bool {
-		if !matched[i].PostedAt.Equal(matched[k].PostedAt) {
-			return matched[i].PostedAt.After(matched[k].PostedAt)
+		a, b := matched[i], matched[k]
+		if filter.Sort == SortRanked {
+			if at, bt := eligibilityTierOf(a), eligibilityTierOf(b); at != bt {
+				return at > bt
+			}
+			if ar, br := roleRelevant(a), roleRelevant(b); ar != br {
+				return ar
+			}
+			if a.IsPriority != b.IsPriority {
+				return a.IsPriority
+			}
 		}
-		return matched[i].ID > matched[k].ID
+		if !a.PostedAt.Equal(b.PostedAt) {
+			return a.PostedAt.After(b.PostedAt)
+		}
+		return a.ID > b.ID
 	})
 
 	total := len(matched)

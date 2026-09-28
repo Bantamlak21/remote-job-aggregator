@@ -152,6 +152,36 @@ func ValidEligibilityFilter(s string) bool {
 	return false
 }
 
+// Sort values for Filter.Sort. SortNewest (the zero value) is the list's only
+// default; SortRanked is an explicit opt-in (see internal/ranking and
+// docs/api.md) — it never becomes the default on its own. "newest" (like
+// "priority=false" elsewhere) is accepted as an explicit synonym for omitting
+// the parameter, but Filter.Sort itself only ever holds "" or "ranked" — see
+// NormalizeSort.
+const (
+	SortNewest = ""
+	SortRanked = "ranked"
+)
+
+// ValidSort reports whether s is a sort query value a caller may send:
+// "" (omitted), "newest", or "ranked".
+func ValidSort(s string) bool {
+	switch s {
+	case SortNewest, "newest", SortRanked:
+		return true
+	}
+	return false
+}
+
+// NormalizeSort maps a validated sort query value to the Filter.Sort value
+// Store/MockRepository switch on ("newest" and "" both become SortNewest).
+func NormalizeSort(s string) string {
+	if s == SortRanked {
+		return SortRanked
+	}
+	return SortNewest
+}
+
 // Pagination defaults and limits, shared between internal/api (which
 // resolves them before constructing a Filter, and reports the
 // resolved values in its JSON response) and MockRepository's own
@@ -183,8 +213,10 @@ type Filter struct {
 	Eligibility  []string
 	RelevantOnly bool   // true: only jobs whose role family is relevant
 	RoleFamily   string // "" means any family
-	Page         int    // <= 0 means "use the default" (1)
-	PageSize     int    // <= 0 means "use the default" (20)
+	// Sort is SortNewest (the default) or SortRanked; ValidSort checks it.
+	Sort     string
+	Page     int // <= 0 means "use the default" (1)
+	PageSize int // <= 0 means "use the default" (20)
 }
 
 // ListResult is one page of List's matches, plus the total count across
