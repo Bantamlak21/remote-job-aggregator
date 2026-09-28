@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,6 +75,9 @@ type roleDTO struct {
 type jobDetailDTO struct {
 	jobSummaryDTO
 	Description string `json:"description"`
+	// Closed is present (true) only when the account that saved the job is viewing it after
+	// it went out of public view; the public detail never has the field.
+	Closed bool `json:"closed,omitempty"`
 	// Eligibility shadows the summary's: the detail carries the reasons.
 	Eligibility *eligibilityDetailDTO `json:"eligibility"`
 }
@@ -85,8 +89,12 @@ type listJobsResponse struct {
 	Total    int             `json:"total"`
 }
 
+// errorResponse is every non-2xx body. Error is text for a person; Code, present on the
+// account routes, is a stable snake_case identifier a client can branch on without
+// reading the text.
 type errorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
 
 func toSummaryDTO(j job.Job) jobSummaryDTO {
@@ -140,7 +148,7 @@ func nonNil(s []string) []string {
 }
 
 func toDetailDTO(j job.Job) jobDetailDTO {
-	d := jobDetailDTO{jobSummaryDTO: toSummaryDTO(j), Description: j.Description}
+	d := jobDetailDTO{jobSummaryDTO: toSummaryDTO(j), Description: j.Description, Closed: j.Closed}
 	if e := j.Eligibility; e != nil {
 		det := &eligibilityDetailDTO{eligibilityDTO: *toEligibilityDTO(e), Reasons: nonNil(e.Reasons), Locations: nonNil(e.Locations),
 			Evidence: []evidenceDTO{}, ClassifierVersion: e.ClassifierVersion}
@@ -163,7 +171,10 @@ func listJobsHandler(repo job.Repository, logger *slog.Logger) http.HandlerFunc 
 
 		result, err := repo.List(r.Context(), filter)
 		if err != nil {
-			logger.Error("listing jobs failed", "error", err)
+			if clientGone(r, err) {
+				return
+			}
+			reqLogger(r, logger).Error("listing jobs failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -182,17 +193,27 @@ func listJobsHandler(repo job.Repository, logger *slog.Logger) http.HandlerFunc 
 }
 
 // getJobHandler handles GET /api/v1/jobs/{id}.
-func getJobHandler(repo job.Repository, logger *slog.Logger) http.HandlerFunc {
+func getJobHandler(repo job.Repository, acct *accountRoutes, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 
 		j, err := repo.Get(r.Context(), id)
 		if err != nil {
 			if errors.Is(err, job.ErrNotFound) {
+				// A job that is no longer listed is still shown to the account that saved it.
+				if acct != nil {
+					if saved, ok := acct.getSavedJob(w, r, id); ok {
+						writeJSON(w, http.StatusOK, toDetailDTO(saved))
+						return
+					}
+				}
 				writeError(w, http.StatusNotFound, "job not found")
 				return
 			}
-			logger.Error("getting job failed", "error", err, "id", id)
+			if clientGone(r, err) {
+				return
+			}
+			reqLogger(r, logger).Error("getting job failed", "error", err, "id", id)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -321,4 +342,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorResponse{Error: message})
+}
+
+// writeCode is writeError with a stable code.
+func writeCode(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, errorResponse{Error: message, Code: code})
+}
+
+// clientGone reports that the request ended because the client went away (it closed the
+// connection or aborted the fetch): there is nobody to answer, and it is not a server error.
+func clientGone(r *http.Request, err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled)
 }

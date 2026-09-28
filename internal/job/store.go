@@ -542,8 +542,47 @@ const listFromClause = ` FROM jobs j JOIN companies c ON c.id = j.company_id
 	JOIN target_companies t ON t.id = j.target_company_id
 	LEFT JOIN job_eligibility e ON e.job_id = j.id`
 
-const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description, e.reasons::text, e.evidence::text, e.detected_locations::text, e.classifier_version` + listFromClause + `
+// closedExpr is true for a job that is no longer publicly listed: removed or closed,
+// past its application deadline, or older than the age limit. It is the exact
+// complement of what the public list and detail show, so "closed" on a saved job
+// always means "the public would not see this job". The age is a number of seconds
+// from configuration, never request data, so it is written into the SQL as an integer.
+func (s *Store) closedExpr() string {
+	e := `(j.status <> 'open' OR (j.expires_at IS NOT NULL AND j.expires_at <= now())`
+	if s.maxAge > 0 {
+		e += fmt.Sprintf(` OR COALESCE(j.published_at, j.first_seen_at) < now() - make_interval(secs => %d)`, int64(s.maxAge.Seconds()))
+	}
+	return e + `)`
+}
+
+const detailColumns = `, j.description, e.reasons::text, e.evidence::text, e.detected_locations::text, e.classifier_version`
+
+func (s *Store) getJobByIDQuery() string {
+	return `SELECT ` + jobColumnsForAPI + detailColumns + `, ` + s.closedExpr() + listFromClause + `
 	WHERE j.status = 'open' AND j.id = $1` + notExpiredClause
+}
+
+// getJobForOwnerQuery is the same job whatever its state: for the account that saved it.
+func (s *Store) getJobForOwnerQuery() string {
+	return `SELECT ` + jobColumnsForAPI + detailColumns + `, ` + s.closedExpr() + listFromClause + `
+	WHERE j.id = $1`
+}
+
+// Visible reports whether the public would see the job: open, not past its deadline
+// and within the age limit. A job that does not exist is not visible. It is what an
+// account must pass to save a job, so saving cannot be used to read a job the public
+// cannot.
+func (s *Store) Visible(ctx context.Context, id int64) (bool, error) {
+	var closed bool
+	err := s.pool.QueryRow(ctx, `SELECT `+s.closedExpr()+` FROM jobs j WHERE j.id = $1`, id).Scan(&closed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("job: checking visibility of %d: %w", id, err)
+	}
+	return !closed, nil
+}
 
 // Get returns the open job with the given id, or ErrNotFound — both for
 // a genuinely missing row and for a non-numeric id (this Store's ids
@@ -552,6 +591,17 @@ const getJobByIDQuery = `SELECT ` + jobColumnsForAPI + `, j.description, e.reaso
 // real row, so there is nothing to distinguish by returning a
 // different error).
 func (s *Store) Get(ctx context.Context, id string) (Job, error) {
+	return s.getJob(ctx, id, false)
+}
+
+// GetForOwner returns a job that an account saved, whatever its state (open, closed,
+// removed, past its deadline or older than the age limit), with Closed set. The
+// caller must have checked that the account saved it.
+func (s *Store) GetForOwner(ctx context.Context, id string) (Job, error) {
+	return s.getJob(ctx, id, true)
+}
+
+func (s *Store) getJob(ctx context.Context, id string, owner bool) (Job, error) {
 	numericID, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return Job{}, fmt.Errorf("job: get %q: %w", id, ErrNotFound)
@@ -569,8 +619,11 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 		locs           *string
 		version        *int
 	)
-	query, args := getJobByIDQuery, []any{numericID}
-	if s.maxAge > 0 {
+	query, args := s.getJobByIDQuery(), []any{numericID}
+	if owner {
+		query = s.getJobForOwnerQuery()
+	}
+	if s.maxAge > 0 && !owner {
 		query += s.maxAgeClause(func(v any) string {
 			args = append(args, v)
 			return fmt.Sprintf("$%d", len(args))
@@ -579,7 +632,7 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 	err = s.pool.QueryRow(ctx, query, args...).Scan(
 		&dbID, &j.Title, &j.CompanyName, &j.IsPriority, &j.Market, &j.Source, &remoteType, &employmentType,
 		&locationRaw, &j.PostedAt, &j.ApplicationURL, &el.status, &el.confidence, &el.basis, &el.restrictions, &el.hours, &el.family, &el.relevant,
-		&description, &reasons, &evid, &locs, &version,
+		&description, &reasons, &evid, &locs, &version, &j.Closed,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

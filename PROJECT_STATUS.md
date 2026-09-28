@@ -857,6 +857,31 @@ tables, no model. Full description, rules, numbers and limits: [docs/eligibility
   is built: the owner wants every worldwide job visible by default (the UI filter defaults to "Any
   location"), and a feedback button needs an authenticated or rate-limited write endpoint first.
 
+### Accounts and saved jobs (branch `Bantamlak21/accounts-bookmarks-e451cddd`)
+
+The owner is taking the board toward production, asked for UI/UX polish and job bookmarks, and chose
+server-side accounts (bookmarks follow the person across devices). Sign-in is a passwordless emailed
+link (Google sign-in was not built: it needs external credentials). Off unless `PUBLIC_BASE_URL` is
+set. Design, configuration, deployment, the privacy notice and the launch checklist:
+[docs/accounts.md](docs/accounts.md); endpoints: [docs/api.md](docs/api.md).
+
+- `internal/account` (email normalization, tokens, store, service), `internal/ratelimit`,
+  `internal/mailer` (SMTP with STARTTLS/TLS, log mailer for development), `internal/api/account.go`,
+  migration `000007_accounts`, config validation that refuses unsafe production settings.
+- Bookmarks: up to 500 per account, only a currently-visible job can be newly saved, saved jobs stay
+  in the list after they stop being visible (`closed: true`), and the account that saved a job can
+  still open its detail.
+- Independent security review (frozen rubric, adversarial critic against the running API): round 1
+  found 26 findings (2 Critical, 10 High); all fixed and each covered by a test the critic's repro
+  drives red without the fix — session fixation on sign-in, a CSRF gap on a missing Origin/atypical
+  media types, a check-then-insert race on the per-address rate limit, a non-owner able to save a job
+  it could not otherwise see, request ids, panic recovery, `/healthz`/`/readyz`, security headers,
+  stable error `code`s, alias-folded throttling, and more. Full detail in `docs/accounts.md` and the
+  round-2 test files (`internal/api/round2_test.go`, `internal/account/round2_test.go`).
+- Frontend (`remote-job-aggregator-web`): sign-in dialog, `/auth/verify` confirm page, header account
+  menu, Save button on cards and detail, `/saved` page, delete account, privacy page, then a UX polish
+  pass from an independent audit.
+
 ## 3. Work In Progress
 
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-

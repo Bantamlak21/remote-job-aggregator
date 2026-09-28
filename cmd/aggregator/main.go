@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Bantamlak12/remote-job-aggregator/internal/account"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/api"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/company"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/config"
@@ -23,6 +25,7 @@ import (
 	"github.com/Bantamlak12/remote-job-aggregator/internal/httpclient"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/ingestion"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/job"
+	"github.com/Bantamlak12/remote-job-aggregator/internal/mailer"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/observability"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/runlog"
 	"github.com/Bantamlak12/remote-job-aggregator/internal/search"
@@ -410,18 +413,36 @@ func runSearchDiscover(ctx context.Context, cfg *config.Config, logger *slog.Log
 // whatever this call opened (the database pool, for postgres; a no-op
 // for mock). internal/api depends only on job.Repository, so this
 // function is the only place that knows which implementation is in use.
-func newJobRepository(ctx context.Context, cfg *config.Config, logger *slog.Logger) (job.Repository, func(), error) {
+func newJobRepository(ctx context.Context, cfg *config.Config, logger *slog.Logger) (job.Repository, *database.DB, func(), error) {
 	if cfg.API.JobRepository == config.JobRepositoryMock {
 		logger.Info("serving mock job data", "job_repository", cfg.API.JobRepository)
-		return job.NewMockRepository(), func() {}, nil
+		return job.NewMockRepository(), nil, func() {}, nil
 	}
 
 	db, err := database.New(ctx, cfg.Database)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connecting to database: %w", err)
+		return nil, nil, nil, fmt.Errorf("connecting to database: %w", err)
 	}
 	logger.Info("serving jobs from postgres", "job_repository", cfg.API.JobRepository, "job_max_age", cfg.API.JobMaxAge)
-	return job.NewStore(db.Pool).WithMaxAge(cfg.API.JobMaxAge), db.Close, nil
+	return job.NewStore(db.Pool).WithMaxAge(cfg.API.JobMaxAge), db, db.Close, nil
+}
+
+// newMailer builds the sender for sign-in links from the auth settings.
+func newMailer(cfg config.AuthConfig, logger *slog.Logger) mailer.Mailer {
+	if cfg.Mailer == "smtp" {
+		return mailer.SMTP{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, Username: cfg.SMTP.Username,
+			Password: cfg.SMTP.Password, From: cfg.SMTP.From, TLS: cfg.SMTP.TLS, Timeout: 10 * time.Second}
+	}
+	logger.Warn("AUTH_MAILER=log: sign-in links are written to the log; development only")
+	return mailer.Log{Logger: logger}
+}
+
+func sameSiteOf(name string) http.SameSite {
+	switch name {
+	case "strict":
+		return http.SameSiteStrictMode
+	}
+	return http.SameSiteLaxMode
 }
 
 // runServe starts the public, read-only job API (see docs/api.md).
@@ -432,17 +453,44 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger, args
 		return err
 	}
 
-	repo, closeRepo, err := newJobRepository(ctx, cfg, logger)
+	repo, db, closeRepo, err := newJobRepository(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("constructing job repository failed", "error", err)
 		return err
 	}
 	defer closeRepo()
 
-	server := api.NewServer(repo, api.Config{
+	apiCfg := api.Config{
 		Addr:              cfg.API.Addr,
 		CORSAllowedOrigin: cfg.API.CORSAllowedOrigin,
-	}, logger)
+	}
+	if db != nil {
+		apiCfg.Ready = db.Pool.Ping
+	}
+	if cfg.Auth.Enabled {
+		store, ok := repo.(*job.Store)
+		if !ok || db == nil {
+			err := errors.New("sign-in (PUBLIC_BASE_URL) needs JOB_REPOSITORY=postgres")
+			logger.Error(err.Error())
+			return err
+		}
+		acfg := account.Defaults()
+		acfg.PublicBaseURL = cfg.Auth.PublicBaseURL
+		acfg.LoginGlobalHour = cfg.Auth.MaxLinksPerHour
+		svc := account.NewService(account.NewStore(db.Pool), newMailer(cfg.Auth, logger), acfg, logger).WithJobs(store)
+		apiCfg.Accounts = svc
+		apiCfg.Saved = store
+		apiCfg.Cookie = api.CookieConfig{Secure: cfg.Auth.CookieSecure, SameSite: sameSiteOf(cfg.Auth.CookieSameSite)}
+		apiCfg.SessionTTL = svc.Config().SessionTTL
+		apiCfg.ClientIPHeader = cfg.Auth.ClientIPHeader
+		runCtx, stopRun := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); svc.Run(runCtx) }()
+		defer func() { stopRun(); <-done }()
+		logger.Info("sign-in and saved jobs are on", "public_base_url", cfg.Auth.PublicBaseURL, "mailer", cfg.Auth.Mailer)
+	}
+
+	server := api.NewServer(repo, apiCfg, logger)
 
 	errCh := make(chan error, 1)
 	go func() {

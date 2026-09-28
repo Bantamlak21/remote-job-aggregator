@@ -1,7 +1,8 @@
 # Public Job API (v1)
 
-Read-only JSON API backing the job-board frontend. No auth — this is public data by
-design (job listings are meant to be found).
+JSON API backing the job-board frontend. The job endpoints are public and read-only: this is
+public data by design (job listings are meant to be found). Optional sign-in and saved jobs
+are described under "Accounts and saved jobs" at the end.
 
 **Status: v1, real data as of Phase 3.** `internal/job.Store` (Postgres-backed) is the
 default implementation as of Phase 3; `internal/job.MockRepository` still exists and is
@@ -182,4 +183,87 @@ Every non-2xx response:
 ## CORS
 
 Configurable via `CORS_ALLOWED_ORIGIN` (default `http://localhost:5173`, Vite's dev
-port). Only `GET` is served in v1 — read-only.
+port). With sign-in off, only `GET` is served and the job endpoints are read-only. With
+sign-in on (see below), `CORS_ALLOWED_ORIGIN` must equal `PUBLIC_BASE_URL`; only that
+origin is sent CORS headers and `Access-Control-Allow-Credentials`, and `*` is refused at
+startup. `Retry-After` and `X-Request-Id` are both listed in
+`Access-Control-Expose-Headers`, so a browser's `fetch` can read them (without this, a
+server header a client relies on, like the real wait time on a `429`, is invisible to
+`fetch` even though it is on the wire).
+
+## Request ids, health and readiness
+
+Every response has an `X-Request-Id` header, and the same id is on every log line of that request
+(quote it when reporting a problem). A request id sent by the client is kept if it is at most 64 characters
+of `A-Z a-z 0-9 . _ -`, otherwise replaced. A panic in a handler is logged with the id and the stack and
+answered with a generic `500`.
+
+`GET /healthz` is `200` while the process runs (liveness). `GET /readyz` is `200` when the database answers
+a ping and `503` otherwise. Neither touches sign-in or mail, so a probe never sends an email.
+
+A request body larger than the endpoint allows (4 KiB on `/auth/*`) is answered `413`.
+
+## Accounts and saved jobs
+
+Off unless `PUBLIC_BASE_URL` is set; design, deployment and privacy notes are in
+[accounts.md](accounts.md). Sign-in is by an emailed single-use link, no password. The
+session is an HttpOnly cookie (`__Host-session` over HTTPS, `session` on plain http for
+development), so requests must be sent with credentials.
+
+Every non-GET request to `/auth/*` or `/me*` must carry exactly one `Origin` header equal to
+`CORS_ALLOWED_ORIGIN`, and either `Content-Type: application/json` (exactly that media type,
+parameters such as `charset` aside) or a non-empty `X-Requested-With`; anything else is
+refused with `403` and the code `cross_origin`. A missing `Origin` is always refused: a real
+browser always sends one on a same-origin fetch. Every response under `/auth` and `/me`
+(success, error, 404, 405, an `OPTIONS` preflight) is `Cache-Control: no-store` plus
+`Vary: Cookie`, and every response from the API — these routes and the public job endpoints —
+carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+`Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`.
+
+Every error body is `{"error": "<text for a person>"}`, and on `/auth` and `/me` also
+`"code"`, a stable identifier a client can branch on instead of matching the text:
+`invalid_email`, `rate_limited` (429, with `Retry-After`), `mail_busy` (503, with
+`Retry-After`), `invalid_link` (400: unknown, used or expired — deliberately not told apart),
+`unauthorized` (401), `bookmark_limit` (409), `job_unavailable` (404), `cross_origin` (403),
+`body_too_large` (413), `bad_request` (400), `unsupported_media_type` (415),
+`confirmation_required` (400), `internal_error` (500, or 503 when the database is briefly
+unreachable — never treated as signed out).
+
+A request body over 1&nbsp;KiB on `/auth/*`, or a `GET`-only route's body of any size,
+answers `413`.
+
+| Method and path | Body | Success | Errors |
+|---|---|---|---|
+| `POST /api/v1/auth/login` | `{"email"}` | `202 {"status":"sent"}`, the same whether or not the address has an account | `invalid_email` 400, `rate_limited` 429 (`Retry-After`), `mail_busy` 503 (`Retry-After`) |
+| `POST /api/v1/auth/inspect` | `{"token"}` | `200 {"email_masked":"a***@***.com"}`, does not spend the link | `invalid_link` 400, `rate_limited` 429 |
+| `POST /api/v1/auth/verify` | `{"token"}` | `200 {"user":{"id","email"}}` and sets the cookie; spends the link and ends any session the caller already held | `invalid_link` 400, `rate_limited` 429 |
+| `POST /api/v1/auth/logout` | none | `204`, clears the cookie | none |
+| `POST /api/v1/auth/logout-all` | none | `204`, ends every session of the account (and cancels its unused links) | `unauthorized` 401 |
+| `GET /api/v1/me` | none | `200 {"user":{"id","email"}}` | `unauthorized` 401 |
+| `DELETE /api/v1/me` | `{"confirm": true}` | `204`, deletes the account, its sessions, saved jobs and unused links | `confirmation_required` 400 (body missing, not JSON, or `confirm` not `true`), `unauthorized` 401 |
+| `GET /api/v1/me/bookmarks?page=&page_size=` | none | `200 {"jobs":[...],"page","page_size","total"}`, newest saved first | `unauthorized` 401 |
+| `GET /api/v1/me/bookmarks/ids` | none | `200 {"ids":["12","34"]}` | `unauthorized` 401 |
+| `PUT /api/v1/me/bookmarks/{id}` | none | `204`, idempotent | `unauthorized` 401, `job_unavailable` 404 (not found, or not currently visible: closed, expired or aged out), `bookmark_limit` 409 (over 500 saved) |
+| `DELETE /api/v1/me/bookmarks/{id}` | none | `204`, idempotent | `unauthorized` 401 |
+
+The emailed link is `<PUBLIC_BASE_URL>/auth/verify#token=...`. The token is in the URL
+fragment so it never reaches a server log or a Referer header; the page reads it, asks
+`/auth/inspect` who it is for, and only calls `/auth/verify` when the person presses a
+confirm button, so a mail scanner that opens the link cannot spend it. Verifying ends
+whatever session the browser making the request already held (never a stale session left
+over from before signing in as someone else). A signed-in account may hold at most 10 live
+sessions; verifying an 11th ends the oldest one first.
+
+The session cookie is reissued (a fresh `Set-Cookie`, sliding its expiry) on `POST
+/auth/verify` and, from time to time, on any authenticated request once more than half its
+idle window has passed — a client that stores cookies normally needs no special handling for
+this.
+
+A saved job in `GET /me/bookmarks` is a normal job summary plus `closed` (the job is no
+longer open on its board, or has passed its deadline, or has aged past `JOB_MAX_AGE_DAYS` —
+all three read the same as "no longer listed") and `saved_at`. Saved jobs stay in the list
+after they close. `GET /api/v1/jobs/{id}` also returns a job the signed-in account saved when
+it is no longer publicly listed, with `"closed": true` on the detail (the field is omitted,
+not `false`, on every public and every currently-listed job, so the public response shape is
+unchanged); to anyone else, and to a job the caller never saved while it was visible, that job
+stays `404`.

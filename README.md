@@ -141,6 +141,14 @@ raw credential even when the value itself was the problem.
 | `INGESTION_WORKERS` | no | `5` | bounded concurrency for `ingest` (one ATS board per worker); 1 – 100 |
 | `INGESTION_MAX_RESPONSE_SIZE` | no | `33554432` (32 MiB) | bytes; `ingest`'s own response cap, separate from `HTTP_MAX_RESPONSE_SIZE` because big boards exceed 5 MiB (databricks: 9.7 MB); must be positive |
 | `INGESTION_HTTP_TIMEOUT` | no | `30s` | whole-round-trip budget for `ingest`'s HTTP client; must be positive |
+| `PUBLIC_BASE_URL` | no | — | turns on sign-in and saved jobs. The web app's origin (no path); `CORS_ALLOWED_ORIGIN` must equal it; https required in production or staging |
+| `AUTH_ENABLED` | no | unset (`PUBLIC_BASE_URL` decides) | `false` runs without sign-in even outside development with no `PUBLIC_BASE_URL`; `true` requires `PUBLIC_BASE_URL` |
+| `AUTH_MAILER` | no | `log` in development, `smtp` otherwise | `smtp` sends the sign-in email (needs `SMTP_USERNAME`/`SMTP_PASSWORD` outside development); `log` prints the link to the log and is refused in production, in staging, and with any `https://` `PUBLIC_BASE_URL` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS` | with `smtp` | port `587`, TLS `starttls` | `SMTP_TLS` is `starttls`, `tls` or `none` (`none` refused outside development) |
+| `COOKIE_SECURE` | no | `true` (`false` for an http URL in development) | required `true` outside development |
+| `COOKIE_SAMESITE` | no | `lax` | `lax` or `strict` only (`None` is not offered: same-site deployment only, see docs/accounts.md) |
+| `CLIENT_IP_HEADER` | no | — | one of `X-Real-IP`, `X-Forwarded-For` (rightmost value used), `CF-Connecting-IP`, `True-Client-IP`, `Fly-Client-IP`; must be set by the one trusted reverse proxy in front of the API |
+| `AUTH_MAX_LINKS_PER_HOUR` | no | `300` | site-wide sign-in link cap, enforced in memory and in the database; crossing it logs `mail_breaker_open` |
 | `TEST_DATABASE_URL` | no | — | integration tests only; database name must end in `_test` |
 
 Config values passed via `DATABASE_URL`'s own query string (e.g.
@@ -307,6 +315,11 @@ empty — Greenhouse's public API has neither, and classifying them is a later p
 
 CORS is a single explicit allowed origin (`CORS_ALLOWED_ORIGIN`, default matching Vite's
 dev server), never a wildcard.
+
+Optional sign-in and saved jobs (bookmarks) are on when `PUBLIC_BASE_URL` is set: passwordless
+email links, opaque server-side sessions, a per-account bookmark list. Needs
+`JOB_REPOSITORY=postgres` and migration 000007. See [docs/accounts.md](docs/accounts.md)
+for configuration, deployment and the launch checklist.
 
 ## Priority companies (Ethiopian tech)
 
