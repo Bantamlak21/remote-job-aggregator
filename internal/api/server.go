@@ -22,6 +22,21 @@ import (
 type Config struct {
 	Addr              string
 	CORSAllowedOrigin string
+
+	// Accounts, when set, turns on sign-in and saved jobs (the /auth and /me
+	// endpoints). It needs Saved, and CORSAllowedOrigin must then be the exact origin
+	// of the web app, which is also the only origin allowed to make state-changing
+	// requests.
+	Accounts Accounts
+	Saved    SavedJobs
+	Cookie   CookieConfig
+	// SessionTTL is the session cookie's lifetime.
+	SessionTTL time.Duration
+	// ClientIPHeader names a header a trusted reverse proxy overwrites with the real
+	// client address; empty means use the connection's address.
+	ClientIPHeader string
+	// Ready, when set, is checked by /readyz (for example the database ping).
+	Ready func(context.Context) error
 }
 
 // Server wraps http.Server with the ListenAndServe/Shutdown shape
@@ -38,11 +53,13 @@ func NewServer(repo job.Repository, cfg Config, logger *slog.Logger) *Server {
 	return &Server{httpServer: &http.Server{
 		Addr:    cfg.Addr,
 		Handler: NewHandler(repo, cfg, logger),
-		// Guards against a slow/hostile client trickling headers in
-		// forever; every other timeout (request body size, handler
-		// duration) is out of scope for a read-only, no-body-accepting
-		// API with no current abuse signal to size them against.
+		// A slow or hostile client cannot hold a connection open: headers, the
+		// whole request, the response and an idle keep-alive are all bounded.
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    16 << 10,
 	}}
 }
 
@@ -53,9 +70,38 @@ func NewServer(repo job.Repository, cfg Config, logger *slog.Logger) *Server {
 func NewHandler(repo job.Repository, cfg Config, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/jobs", listJobsHandler(repo, logger))
-	mux.HandleFunc("GET /api/v1/jobs/{id}", getJobHandler(repo, logger))
+	// Liveness and readiness for the deploy and the monitor: neither touches sign-in or mail.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if cfg.Ready != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := cfg.Ready(ctx); err != nil {
+				reqLogger(r, logger).Error("readiness check failed", "error", err)
+				writeError(w, http.StatusServiceUnavailable, "not ready")
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	})
 
-	return withRequestLog(logger, withCORS(cfg.CORSAllowedOrigin, mux))
+	var acct *accountRoutes
+	var handler http.Handler = mux
+	credentials := false
+	if cfg.Accounts != nil && cfg.Saved != nil {
+		acct = &accountRoutes{accounts: cfg.Accounts, saved: cfg.Saved, cookie: cfg.Cookie, sessionTTL: cfg.SessionTTL,
+			clientIPHeader: cfg.ClientIPHeader, logger: logger}
+		acct.mount(mux)
+		handler = csrfGuard(cfg.CORSAllowedOrigin, logger, mux)
+		credentials = true
+	}
+	mux.HandleFunc("GET /api/v1/jobs/{id}", getJobHandler(repo, acct, logger))
+
+	return withRequestLog(logger, withSecurityHeaders(withCORS(cfg.CORSAllowedOrigin, credentials, handler)))
 }
 
 // ListenAndServe blocks until the server stops. http.Server.Shutdown's
