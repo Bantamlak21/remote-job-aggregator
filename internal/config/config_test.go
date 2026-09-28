@@ -17,6 +17,7 @@ func clearAll(t *testing.T) {
 		"DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME", "LOG_LEVEL",
 		"LOG_FORMAT", "SHUTDOWN_TIMEOUT", "HTTP_TIMEOUT", "HTTP_MAX_RESPONSE_SIZE",
 		"HTTP_USER_AGENT", "DISCOVERY_WORKERS", "SERPER_API_KEY", "API_ADDR", "CORS_ALLOWED_ORIGIN", "INGESTION_WORKERS", "INGESTION_MAX_RESPONSE_SIZE", "INGESTION_HTTP_TIMEOUT", "JOB_REPOSITORY", "SEARCH_MAX_QUERIES_PER_RUN", "JOB_MAX_AGE_DAYS", "ETHIOJOBS_MAX_PAGES", "HIMALAYAS_MAX_PAGES", "RELEVANCE_PROFILE",
+		"PUBLIC_BASE_URL", "AUTH_ENABLED", "AUTH_MAILER", "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "SMTP_TLS", "COOKIE_SECURE", "COOKIE_SAMESITE", "CLIENT_IP_HEADER", "AUTH_MAX_LINKS_PER_HOUR",
 	} {
 		t.Setenv(key, "")
 	}
@@ -84,6 +85,7 @@ func TestLoad_DefaultsAppliedWhenOnlyRequiredFieldSet(t *testing.T) {
 func TestLoad_OverridesRespected(t *testing.T) {
 	clearAll(t)
 	t.Setenv("APP_ENV", "production")
+	t.Setenv("AUTH_ENABLED", "false") // this test is not about sign-in
 	t.Setenv("DATABASE_URL", "postgresql://user:pass@db:5432/jobs")
 	t.Setenv("DB_MAX_OPEN_CONNS", "25")
 	t.Setenv("DB_MIN_CONNS", "10")

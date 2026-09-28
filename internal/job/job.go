@@ -101,6 +101,10 @@ type Job struct {
 	// Eligibility and Role are nil until the job has been classified.
 	Eligibility *Eligibility
 	Role        *Role
+	// Closed is set only for a job an account saved: it is no longer publicly listed
+	// (closed or removed on its board, past its application deadline, or older than
+	// the age limit). The public list and detail never return such a job.
+	Closed bool
 }
 
 // Eligibility is the stored verdict on whether a candidate in Ethiopia could
