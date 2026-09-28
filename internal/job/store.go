@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Bantamlak12/remote-job-aggregator/internal/ranking"
 )
 
 // Record is the full persistence-level shape of one ingested job —
@@ -493,14 +495,22 @@ func (s *Store) List(ctx context.Context, filter Filter) (ListResult, error) {
 		return ListResult{Total: total}, nil
 	}
 
-	// Strictly newest-first. Priority (Ethiopian) companies are badged and
-	// filterable but deliberately NOT sorted above other jobs: an earlier
-	// version pinned them first, and Bantamlak asked for recency instead.
-	// posted_at is the COALESCE(...) column alias from jobColumnsForAPI;
-	// referencing it by alias in ORDER BY (rather than repeating the
-	// COALESCE expression) is standard Postgres.
+	// Strictly newest-first by default. Priority (Ethiopian) companies are
+	// badged and filterable but deliberately NOT sorted above other jobs: an
+	// earlier version pinned them first, and Bantamlak asked for recency
+	// instead. posted_at is the COALESCE(...) column alias from
+	// jobColumnsForAPI; referencing it by alias in ORDER BY (rather than
+	// repeating the COALESCE expression) is standard Postgres.
+	//
+	// sort=ranked (Phase 5, internal/ranking) is an explicit opt-in that
+	// reorders by eligibility tier, then role relevance, then priority
+	// company, then recency — it never becomes the default on its own.
+	orderBy := "posted_at DESC, j.id DESC"
+	if filter.Sort == SortRanked {
+		orderBy = ranking.OrderBySQL
+	}
 	query := `SELECT ` + jobColumnsForAPI + `, count(*) OVER() AS total` + fromClause + where +
-		" ORDER BY posted_at DESC, j.id DESC" +
+		" ORDER BY " + orderBy +
 		" LIMIT " + arg(pageSize) + " OFFSET " + arg((page-1)*pageSize)
 
 	rows, err := s.pool.Query(ctx, query, args...)

@@ -98,6 +98,7 @@ Query params (all optional):
 | `eligibility` | string | Comma-separated statuses to keep: `eligible`, `ineligible`, `uncertain`, `unclassified` (jobs with no verdict yet). `eligibility=eligible,uncertain` keeps jobs that are open or unclear. Anything else is a `400` |
 | `relevant` | string | `true` keeps roles the role profile counts as relevant. `false` is the same as omitting it. Anything else is a `400` |
 | `role_family` | string | One family (`software_engineering`, ...). Lower-case letters and underscores, at most 40; anything else is a `400` |
+| `sort` | string | `newest` (the default, whether given or omitted): strictly by post date. `ranked`: eligibility tier first (`eligible`, then `uncertain`/`unclassified` together, then `ineligible`), then a relevant role, then a priority company, then post date — see [Ranked sort](#ranked-sort) below. Anything else is a `400` |
 | `page` | int | Default `1` |
 | `page_size` | int | Default `20`, max `100` |
 
@@ -130,8 +131,23 @@ Response `200`:
 }
 ```
 
-Invalid `remote_type`/`employment_type`/`priority`/`market`/`eligibility`/`relevant`/`role_family` values, or `page`/`page_size` out of range, are a
-`400` (see Error shape), not silently ignored.
+Invalid `remote_type`/`employment_type`/`priority`/`market`/`eligibility`/`relevant`/`role_family`/`sort` values, or `page`/`page_size` out of
+range, are a `400` (see Error shape), not silently ignored.
+
+### Ranked sort
+
+`sort=ranked` (`internal/ranking`) is an explicit opt-in; the list's only default stays newest-first — every worldwide job stays visible and in
+that order unless a caller asks for `ranked`, the same reasoning behind the eligibility filter defaulting to no filter (see docs/eligibility.md).
+Ranked order, highest first:
+
+1. Eligibility tier: `eligible`, then `uncertain` and `unclassified` together (both mean "we don't know"), then `ineligible` (known to be closed
+   to Ethiopia, which is worse to see than simply unknown).
+2. Within a tier, a relevant role (`role.relevant`) ranks above one that isn't.
+3. Then, a job from a priority (Ethiopian tech) company ranks above one that isn't.
+4. Then, the newest post.
+
+Nothing new is computed or stored for this: every input (`eligibility.status`, `role.relevant`, `is_priority`, `posted_at`) is already in the
+response above, so the order is fully reconstructable from data a caller already has — there is no separate "score" or "reasons" field to fetch.
 
 ## GET /api/v1/jobs/{id}
 

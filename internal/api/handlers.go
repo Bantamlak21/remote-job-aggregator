@@ -315,6 +315,15 @@ func parseFilter(q url.Values) (job.Filter, error) {
 		filter.RoleFamily = v
 	}
 
+	// "sort=ranked" opts into internal/ranking's order; omitted (or "newest")
+	// keeps the list's only default, newest-first.
+	if v := q.Get("sort"); v != "" {
+		if !job.ValidSort(v) {
+			return job.Filter{}, fmt.Errorf("sort must be newest or %s (got %q)", job.SortRanked, v)
+		}
+		filter.Sort = job.NormalizeSort(v)
+	}
+
 	if v := q.Get("page"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {

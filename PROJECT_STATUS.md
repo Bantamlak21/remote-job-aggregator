@@ -882,12 +882,37 @@ set. Design, configuration, deployment, the privacy notice and the launch checkl
   menu, Save button on cards and detail, `/saved` page, delete account, privacy page, then a UX polish
   pass from an independent audit.
 
+### Phase 5: Ranking (branch `Bantamlak21/phase5-ranking-e451cddd`)
+
+Smaller than the roadmap below originally sketched, because by the time this phase started,
+eligibility, role relevance, and priority-company status (Phases 3 and 4) already existed as
+stored columns — ranking needed no new migration, no CLI command, and no ingestion-time step;
+it is purely an `ORDER BY` variant over data that already exists. See
+[docs/api.md](docs/api.md#ranked-sort).
+
+- `internal/ranking`: `Tier`/`EligibilityTier` (the ordering rule as plain Go, unit-tested) and
+  `OrderBySQL` (the same rule as a Postgres `ORDER BY`, generated from the same tier constants so
+  the two numbers cannot drift independently; a dedicated test parses the SQL to confirm the
+  status-to-tier mapping matches too).
+- `job.Filter.Sort` (`""`/`"newest"` or `"ranked"`), wired into `Store.List`'s query and
+  `MockRepository.List`'s in-memory sort; the API's `?sort=` param (default unchanged: newest-first).
+- Order, highest first: eligibility tier (`eligible` > `uncertain`/`unclassified` together >
+  `ineligible`), then relevant role, then priority company, then recency — an owner decision (the
+  default list stays newest-first and shows every job; `ranked` is an explicit opt-in, never
+  automatic, matching Phase 4's "every job visible" decision).
+- Tests: unit tests for the tier logic and the SQL/Go consistency guards; a real-Postgres
+  integration test with dates that deliberately contradict the ranked order (so a test that merely
+  agreed with recency by accident couldn't pass); a pagination test (the order holds across
+  `LIMIT`/`OFFSET`, not just within one page); the same ordering test against `MockRepository`; an
+  API-level test for `?sort=` validation and end-to-end ordering. Two mutation checks (the SQL's
+  `DESC`→`ASC`, and disconnecting `Filter.Sort` from the query) each broke a test, confirmed, reverted.
+
 ## 3. Work In Progress
 
 **Accounts and saved jobs** (Section 2) is code-complete, reviewed three times (backend
-security and frontend UX each independently, against a frozen rubric), and open as
-**PR #21** (https://github.com/Bantamlak12/remote-job-aggregator/pull/21), not yet merged as
-of this writing. Frontend changes are committed locally in `remote-job-aggregator-web`
+security and frontend UX each independently, against a frozen rubric), and was
+**PR #21** (https://github.com/Bantamlak12/remote-job-aggregator/pull/21) — **merged**.
+Frontend changes are committed locally in `remote-job-aggregator-web`
 (branch `init`, no remote, commits `73b27cf`..`db6fa6f`).
 
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
@@ -929,17 +954,9 @@ Ordered by dependency, per the original project requirements. Phase 2 (and the s
 discovery extension to it, this session) is complete — see Section 2 — and removed from this
 list. Phase 3 (ATS integration & ingestion, Greenhouse first) is also complete — see
 Section 2 — and removed from this list. Phase 4 (geographic eligibility and relevance) is also
-built — see Section 2 — and removed from this list.
-
-### Phase 5 — Ranking & upsert/change detection
-- **Objective:** deterministic, explainable scoring, wired into the (already built)
-  ingestion pipeline. The upsert-by-`(source, source_job_id)` identity, `content_hash` change
-  detection, and open/removed lifecycle originally listed here shipped in Phase 3.
-- **Tasks:** `ranking` package (configurable scoring, explainable output); ingestion (or a
-  step after it) computing/storing scores for new and changed jobs.
-- **Expected files/modules:** `internal/ranking/`; small changes to `internal/ingestion/`.
-- **Dependencies:** Phase 4 (jobs need eligibility/relevance data to rank against).
-- **Verification:** unit tests for scoring, plus an eval suite for ranking quality.
+built — see Section 2 — and removed from this list. Phase 5 (ranking) is also built — see
+Section 2 — and removed from this list; it turned out smaller than sketched below once Phases
+3/4's stored data made an ingestion-time scoring step and a ranking table unnecessary.
 
 ### Phase 6 — Scheduling & notifications
 - **Objective:** periodic, unattended execution; notify on relevant new jobs.
@@ -1242,16 +1259,22 @@ because none of that code exists yet.
 
 ## 9. Exact Next Step
 
-**Before Phase 5:** run `aggregator migrate-up` (000004 to 000006), `aggregator discover-boards`,
-`aggregator ingest` (which now also classifies what it stored) and `aggregator classify` once for
-the jobs already stored, then restart `aggregator serve` and rebuild the frontend. Schedule
-`ingest` daily and the search source weekly (docs/priority-companies.md).
+Run `aggregator migrate-up` (000004 through 000007 — 000007 adds accounts/bookmarks),
+`aggregator discover-boards`, `aggregator ingest` (which now also classifies what it stored) and
+`aggregator classify` once for the jobs already stored, then restart `aggregator serve` and
+rebuild the frontend. Schedule `ingest` daily and the search source weekly
+(docs/priority-companies.md) — see the note below, nothing runs this automatically yet.
 
-**Start Phase 5: ranking.** Phase 4 stores what ranking needs: each job's eligibility status,
-confidence and basis, and role family and relevance flag (`job_eligibility`). The list is
-still sorted by recency only; a ranking that puts jobs that are eligible, relevant and fresh first,
-explainably (why is this job here), is the next deterministic step, scored by an eval like Phase 4's.
-Keep the eval rule: quality that unit tests cannot capture gets a labeled set and a held-out score.
+**Phase 5 (ranking) is done** — see Section 2. `?sort=ranked` is live; the list's default stays
+newest-first.
+
+**Start Phase 6: scheduling & notifications.** Nothing in this codebase runs `ingest`/`classify`
+periodically on its own — `aggregator serve` never calls them, and there is no `internal/scheduler`
+yet. Today that's an operator's own cron/systemd timer/k8s CronJob calling the CLI (asked and
+answered 2026-09-28); building an in-process scheduler (no distributed scheduling infra, per
+CLAUDE.md) so a deploy needs no external cron is Phase 6's `scheduler` package, and it's the thing
+to build if Bantamlak wants ingestion to "just happen" on a server rather than needing a cron
+entry. The `notification` package (Telegram first) depends on this too.
 
 Smaller, independent items:
 - **Phase 7 (Lever/Ashby) is now blocking real coverage**: `search-discover` found 6 boards,
