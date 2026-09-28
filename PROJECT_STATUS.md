@@ -884,6 +884,12 @@ set. Design, configuration, deployment, the privacy notice and the launch checkl
 
 ## 3. Work In Progress
 
+**Accounts and saved jobs** (Section 2) is code-complete, reviewed three times (backend
+security and frontend UX each independently, against a frozen rubric), and open as
+**PR #21** (https://github.com/Bantamlak12/remote-job-aggregator/pull/21), not yet merged as
+of this writing. Frontend changes are committed locally in `remote-job-aggregator-web`
+(branch `init`, no remote, commits `73b27cf`..`db6fa6f`).
+
 PRs #3–#9 (Phase 2, search discovery, the job API, the company-names fix, the deferred-
 feature note, Phase 3) are merged. The **Ethiopian priority companies** work (Section 2) is
 code-complete, reviewed twice, and open as **PR #10**
